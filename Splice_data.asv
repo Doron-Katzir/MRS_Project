@@ -113,9 +113,7 @@ function imgBlocks = FitSubset(inputImg, nAvg, basisName)
         imgBlock = inputImg.Slice(sliceArgs{:});
 
         % Fit with given basis function
-        fitFileName = "Division_" + nAvg + "_" + k + ".basis";
-        imgBlock.FitLCModel(basisName, 'isVerbose', true, ...
-            'outputFilename', fitFileName);
+        imgBlock.FitLCModel(basisName, 'isVerbose', true);
 
         % Average this subset over the set dimension
         imgBlock = imgBlock.Average("dim", setString);
@@ -129,5 +127,3 @@ end
 basisName = "For_division_" + erase(img.name, " ") + ".basis";
 basisFunc.ExportBasisToLCModel(basisName, 'TE', TE);
 splicedImg = FitSubset(img, 18, basisName);
-
-
