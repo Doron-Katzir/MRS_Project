@@ -1,4 +1,8 @@
-img = VDIIO.LoadTwix('meas_MID00090_FID32072_eja_svs_slaser_TE_80_r0.dat', 'isICEChop', true);
+clear;
+img = VDIIO.LoadTwix( ...
+    ['C:\Users\User\Documents\Thesis_Lab\Data\' ...
+    'meas_MID00090_FID32072_eja_svs_slaser_TE_80_r0.dat'], ...
+    'isICEChop', true);
 img.AddCoils;
 img.ChopPts("numPts", 4096);
 img.FT;
@@ -51,3 +55,50 @@ img1.FitLCModel("Doron.basis", 'isVerbose', true);
 % 18x2
 % 36x1
 % For each you can plot the same time course (over the same x-axis time range!)
+
+%%
+function results = FitSubset(inputImg, basisFile, nAvg, varargin)
+    % Get parameters.
+    setString = 'set';
+    dimTypes = inputImg.GetDimType;
+    idxSetDim = find(strcmpi(dimTypes, setString), 1);
+    totalSets = size(inputImg.data, idxSetDim);
+    nBlocks = totalSets / nAvg;
+
+    % Check if desired number of sets to average is an exact divisor of the
+    % total number of sets.
+    if mod(totalSets, nAvg) ~= 0
+        error(['nAvg must evenly divide the total number of sets. ' ...
+            'totalSets = %d, nAvg = %d.'], totalSets, nAvg);
+    end
+
+    % Create copies of the image according to desired number of sets.
+    %   Preallocate cell array of sliced VDIImageND objects
+    imgBlocks = cell(nBlocks, 1);
+    setAvgs = zeros(nBlocks, 1);
+
+    for k = 1:nBlocks
+
+        firstSet = (k - 1) * nAvg + 1;
+        lastSet  = k * nAvg;
+
+        setRanges(k, :) = [firstSet, lastSet];
+
+        sliceArgs = repmat({':'}, 1, numel(dimTypes));
+        sliceArgs{idxSetDim} = sprintf('%d:%d', firstSet, lastSet);
+
+        % Slice original image into a copied subset
+        imgBlock = inputImg.Slice(sliceArgs{:});
+
+        % Fit with given basis function
+        FitLCModel("Doron.basis", 'isVerbose', true);
+
+        % Average this subset over the set dimension
+        imgBlock = imgBlock.Average("dim", setString);
+        imgBlocks{k} = imgBlock;
+        
+    end
+end
+
+
+r = FitSubset(img, "Doron.basis", 18);
