@@ -8,6 +8,8 @@ setSizes = [2, 4, 6, 9, 12, 18, 36];
 metabList = ["NAA", "NAAG", "Cr", "PCr", "GPC", "PCh", "Glu", "Gln", ...
         "GABA", "GSH", "Tau", "Asc", "Glc", "Ace", "mI", "sI", "Asp", ...
         "Lac"];
+coordDir = 'C:\Users\doronkatzir1\Desktop\Thesis_Lab\LCMFit';
+
 
 %% Preprocessing
 
@@ -113,7 +115,7 @@ function imgBlocks = FitSubset(inputImg, nAvg, basisName)
         imgBlock = inputImg.Slice(sliceArgs{:});
 
         % Fit with given basis function
-        fitFileName = "Division_" + nAvg + "_" + k + ".basis";
+        fitFileName = "Division_" + nAvg + "_" + "part_" + k + ".basis";
         imgBlock.FitLCModel(basisName, 'isVerbose', true, ...
             'outputFilename', fitFileName);
 
@@ -123,11 +125,158 @@ function imgBlocks = FitSubset(inputImg, nAvg, basisName)
     end
 end
 
+function [quant, fitData] = readCoord(coordDir)
+    coordInfo = dir(fullfile(coordDir, "*.coord"));
+    
+    if isempty(coordInfo)
+        error('No .coord files found in: %s', coordDir);
+    end
+    
+    coordFiles = strings(numel(coordInfo), 1);
+    
+    for k = 1:numel(coordInfo)
+        coordFiles(k) = fullfile(coordInfo(k).folder, coordInfo(k).name);
+    end
+
+    [quant, fitData] = VDIIO.ReadLCMCoord(coordFiles);
+end
+
+function outTable = coordToMetabs(coordTable, wantedMetabolites, ...
+    valueColumn)
+
+    wantedMetabolites = string(wantedMetabolites(:));
+    valueColumn = string(valueColumn);
+
+    requiredCols = ["filename", "name", valueColumn];
+    tableCols = string(coordTable.Properties.VariableNames);
+
+    for c = requiredCols
+        if ~ismember(c, tableCols)
+            error('coordTable is missing required column "%s".', c);
+        end
+    end
+
+    % Work on copy
+    T = coordTable;
+    T.filename = string(T.filename);
+    T.name = string(T.name);
+
+    % Keep only wanted metabolites
+    T = T(ismember(T.name, wantedMetabolites), :);
+
+    if isempty(T)
+        error(['None of the wanted metabolites were found in ' ...
+            'coordTable.name.']);
+    end
+
+    % Extract division size and part number from filename
+    % Supports:
+    %   Division_18_1.basis.coord
+    %   Division_18_part_1.basis.coord
+    nRows = height(T);
+
+    divisionSize = nan(nRows, 1);
+    partNumber = nan(nRows, 1);
+
+    for i = 1:nRows
+
+        curFile = T.filename(i);
+
+        tok = regexp(curFile, ...
+            'Division_(\d+)_(?:part_)?(\d+)\.basis\.coord', ...
+            'tokens', 'once');
+
+        if isempty(tok)
+            error('Could not parse filename: %s', curFile);
+        end
+
+        divisionSize(i) = str2double(tok{1});
+        partNumber(i) = str2double(tok{2});
+    end
+
+    T.divisionSize = divisionSize;
+    T.partNumber = partNumber;
+
+    % Create one table per division size
+    uniqueDivisions = unique(T.divisionSize);
+    uniqueDivisions = sort(uniqueDivisions);
+
+    tablesByDivision = struct;
+
+    for d = 1:numel(uniqueDivisions)
+
+        curDivision = uniqueDivisions(d);
+
+        % Rows belonging only to this division size
+        Td = T(T.divisionSize == curDivision, :);
+
+        % Unique parts for this division
+        parts = unique(Td.partNumber);
+        parts = sort(parts);
+
+        % Initialize output table for this division
+        outTable = table;
+        outTable.name = wantedMetabolites;
+
+        % Add one column per part
+        for p = 1:numel(parts)
+            colName = sprintf('part_%d', parts(p));
+            outTable.(colName) = nan(numel(wantedMetabolites), 1);
+        end
+
+        % Fill values
+        for m = 1:numel(wantedMetabolites)
+
+            curMetab = wantedMetabolites(m);
+
+            for p = 1:numel(parts)
+
+                curPart = parts(p);
+                colName = sprintf('part_%d', curPart);
+
+                idx = Td.name == curMetab & Td.partNumber == curPart;
+
+                if sum(idx) == 1
+                    outTable.(colName)(m) = Td.(valueColumn)(idx);
+
+                elseif sum(idx) > 1
+                    warning(['Multiple values found for %s,' ...
+                        ' Division %d, part %d. Using first value.'], ...
+                        curMetab, curDivision, curPart);
+
+                    vals = Td.(valueColumn)(idx);
+                    outTable.(colName)(m) = vals(1);
+
+                else
+                    % Missing metabolite in this division/part
+                    outTable.(colName)(m) = NaN;
+                end
+            end
+        end
+
+        % Store in struct
+        fieldName = sprintf('Division_%d', curDivision);
+        fieldName = matlab.lang.makeValidName(fieldName);
+
+        tablesByDivision.(fieldName) = outTable;
+    end
+end
 %% Run main
 
+% Create and export basis function
 [basisFunc, TE] = createBasis(img, metabList);
 basisName = "For_division_" + erase(img.name, " ") + ".basis";
 basisFunc.ExportBasisToLCModel(basisName, 'TE', TE);
-splicedImg = FitSubset(img, 18, basisName);
+
+% Splice data to subsets
+for size = setSizes
+    splicedImg = FitSubset(img, size, basisName);
+end
+
+% Read coord files
+[quant, fitData] = readCoord(coordDir);
+coordTable = quant.metabTable;
+outTable = coordToMetabs(coordTable, metabList, "sig");
+
 
 
