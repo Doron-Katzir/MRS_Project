@@ -4,7 +4,7 @@ clear;
 img = VDIIO.LoadTwix(['C:\Users\doronkatzir1\Desktop\Thesis_Lab\Data\' ...
     'meas_MID00090_FID32072_eja_svs_slaser_TE_80_r0.dat'], ...
     'isICEChop', true);
-setSizes = [2, 4, 6, 9, 12, 18, 36];
+setSizes = [1, 2, 4, 6, 9, 12, 18, 36];
 metabList = ["NAA", "NAAG", "Cr", "PCr", "GPC", "PCh", "Glu", "Gln", ...
         "GABA", "GSH", "Tau", "Asc", "Glc", "Ace", "mI", "sI", "Asp", ...
         "Lac"];
@@ -268,7 +268,7 @@ end
 basisName = "For_division_" + erase(img.name, " ") + ".basis";
 basisFunc.ExportBasisToLCModel(basisName, 'TE', TE);
 
-% Splice data to subsets
+% Splice data and fit subsets
 for size = setSizes
     splicedImg = FitSubset(img, size, basisName);
 end
