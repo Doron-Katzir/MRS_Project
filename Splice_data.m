@@ -4,7 +4,7 @@ clear;
 img = VDIIO.LoadTwix(['C:\Users\doronkatzir1\Desktop\Thesis_Lab\Data\' ...
     'meas_MID00090_FID32072_eja_svs_slaser_TE_80_r0.dat'], ...
     'isICEChop', true);
-setSizes = [2, 4, 6, 9, 12, 18, 36];
+setSizes = [1, 2, 4, 6, 9, 12, 18, 36];
 metabList = ["NAA", "NAAG", "Cr", "PCr", "GPC", "PCh", "Glu", "Gln", ...
         "GABA", "GSH", "Tau", "Asc", "Glc", "Ace", "mI", "sI", "Asp", ...
         "Lac"];
@@ -113,14 +113,17 @@ function imgBlocks = FitSubset(inputImg, nAvg, basisName)
 
         % Slice original image into a copied subset
         imgBlock = inputImg.Slice(sliceArgs{:});
-
-        % Fit with given basis function
-        fitFileName = "Division_" + nAvg + "_" + "part_" + k + ".basis";
-        imgBlock.FitLCModel(basisName, 'isVerbose', true, ...
-            'outputFilename', fitFileName);
-
-        % Average this subset over the set dimension
+        
+        % Average this subset over the set dimension FIRST
         imgBlock = imgBlock.Average("dim", setString);
+        
+        % Fit the averaged block
+        fitFileName = "Division_" + nAvg + "_" + "part_" + k + ".basis";
+        
+        imgBlock.FitLCModel(basisName, ...
+            'isVerbose', true, ...
+            'outputFilename', fitFileName);
+        
         imgBlocks{k} = imgBlock;
     end
 end
@@ -498,7 +501,7 @@ function summary = PlotMetabAcrossDivisions(tablesByDivisionInput, metabName, va
         xlabel(sprintf('Time (%s)', timeUnit));
         ylabel(yLabelText, 'Interpreter', 'none');
         title(sprintf('%s across divisions', metabName), 'Interpreter', 'none');
-        legend('Location', 'best');
+        legend('Location', 'best', 'Interpreter', 'none');
         grid on;
         hold off;
     end

@@ -4,7 +4,7 @@ clear;
 img = VDIIO.LoadTwix(['C:\Users\doronkatzir1\Desktop\Thesis_Lab\Data\' ...
     'meas_MID00090_FID32072_eja_svs_slaser_TE_80_r0.dat'], ...
     'isICEChop', true);
-setSizes = [2, 4, 6, 9, 12, 18, 36];
+setSizes = [1, 2, 4, 6, 9, 12, 18, 36];
 metabList = ["NAA", "NAAG", "Cr", "PCr", "GPC", "PCh", "Glu", "Gln", ...
         "GABA", "GSH", "Tau", "Asc", "Glc", "Ace", "mI", "sI", "Asp", ...
         "Lac"];
@@ -113,14 +113,17 @@ function imgBlocks = FitSubset(inputImg, nAvg, basisName)
 
         % Slice original image into a copied subset
         imgBlock = inputImg.Slice(sliceArgs{:});
-
-        % Fit with given basis function
-        fitFileName = "Division_" + nAvg + "_" + "part_" + k + ".basis";
-        imgBlock.FitLCModel(basisName, 'isVerbose', true, ...
-            'outputFilename', fitFileName);
-
-        % Average this subset over the set dimension
+        
+        % Average this subset over the set dimension FIRST
         imgBlock = imgBlock.Average("dim", setString);
+        
+        % Fit the averaged block
+        fitFileName = "Division_" + nAvg + "_" + "part_" + k + ".basis";
+        
+        imgBlock.FitLCModel(basisName, ...
+            'isVerbose', true, ...
+            'outputFilename', fitFileName);
+        
         imgBlocks{k} = imgBlock;
     end
 end
@@ -141,7 +144,7 @@ function [quant, fitData] = readCoord(coordDir)
     [quant, fitData] = VDIIO.ReadLCMCoord(coordFiles);
 end
 
-function outTable = coordToMetabs(coordTable, wantedMetabolites, ...
+function tablesByDivision = coordToMetabs(coordTable, wantedMetabolites, ...
     valueColumn)
 
     wantedMetabolites = string(wantedMetabolites(:));
@@ -498,7 +501,7 @@ function summary = PlotMetabAcrossDivisions(tablesByDivisionInput, metabName, va
         xlabel(sprintf('Time (%s)', timeUnit));
         ylabel(yLabelText, 'Interpreter', 'none');
         title(sprintf('%s across divisions', metabName), 'Interpreter', 'none');
-        legend('Location', 'best');
+        legend('Location', 'best', 'Interpreter', 'none');
         grid on;
         hold off;
     end
@@ -520,6 +523,37 @@ function nAvg = ParseDivisionNumber(fieldName)
         nAvg = str2double(tok{1});
     end
 end
+
+function y = ExtractMetabVectorFromTable(T, metabName)
+    % Extracts one metabolite row from a Division_* table.
+    %
+    % Expected table format:
+    %   name    part_1    part_2    part_3 ...
+    
+    y = [];
+    
+    metabName = string(metabName);
+    
+    if ~ismember("name", string(T.Properties.VariableNames))
+        error('The table does not contain a column named "name".');
+    end
+    
+    names = string(T.name);
+    
+    rowIdx = find(strcmpi(names, metabName), 1, 'first');
+    
+    if isempty(rowIdx)
+        warning('Metabolite "%s" was not found in this table.', metabName);
+        return;
+    end
+    
+    % Extract all columns except the first one, which is the metabolite name
+    y = T{rowIdx, 2:end};
+    
+    % Make sure output is numeric row vector
+    y = double(y);
+    y = reshape(y, 1, []);
+end
 %% Run main
 
 % Create and export basis function
@@ -535,9 +569,24 @@ end
 % Read coord files
 [quant, fitData] = readCoord(coordDir);
 coordTable = quant.metabTable;
-outTable = coordToMetabs(coordTable, metabList, "sig");
+tablesByDivision = coordToMetabs(coordTable, metabList, "sig");
 
 % Plot
-summaryNAA = PlotMetabAcrossDivisions(tablesByDivision, "NAA");
+summaryByMetab = struct;
+
+for i = 1:numel(metabList)
+
+    metabName = metabList(i);
+
+    fprintf('Plotting %s...\n', metabName);
+
+    fieldName = matlab.lang.makeValidName(metabName);
+
+    summaryByMetab.(fieldName) = PlotMetabAcrossDivisions( ...
+        tablesByDivision, ...
+        metabName, ...
+        'yLabel', "sig");
+end
+
 
 
