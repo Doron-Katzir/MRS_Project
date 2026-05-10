@@ -141,7 +141,7 @@ function [quant, fitData] = readCoord(coordDir)
     [quant, fitData] = VDIIO.ReadLCMCoord(coordFiles);
 end
 
-function outTable = coordToMetabs(coordTable, wantedMetabolites, ...
+function tablesByDivision = coordToMetabs(coordTable, wantedMetabolites, ...
     valueColumn)
 
     wantedMetabolites = string(wantedMetabolites(:));
@@ -261,6 +261,296 @@ function outTable = coordToMetabs(coordTable, wantedMetabolites, ...
         tablesByDivision.(fieldName) = outTable;
     end
 end
+
+function summary = PlotMetabAcrossDivisions(tablesByDivisionInput, metabName, varargin)
+% PlotMetabAcrossDivisions
+%
+% Plots one metabolite across all divisions.
+%
+% Supports:
+%   1. Single dataset:
+%       PlotMetabAcrossDivisions(tablesByDivision, "NAA")
+%
+%   2. Multiple datasets / patients in the future:
+%       PlotMetabAcrossDivisions({tablesByDivisionPatient1, ...
+%                                 tablesByDivisionPatient2}, "NAA")
+%
+% Each tablesByDivision structure should contain fields like:
+%   Division_2
+%   Division_4
+%   Division_6
+%   Division_9
+%   Division_12
+%   Division_18
+%   Division_36
+%
+% Each field should contain a table like:
+%   name    part_1    part_2    part_3 ...
+%
+% Zeros are shown in raw patient traces but ignored in averages.
+
+    % ------------------------------------------------------------
+    % Optional inputs
+    % ------------------------------------------------------------
+    p = inputParser;
+    p.addParameter('timePerSet', 1, @(x) isnumeric(x) && isscalar(x));
+    p.addParameter('timeUnit', "sets", @(x) ischar(x) || isstring(x));
+    p.addParameter('showPatients', true, @(x) islogical(x) && isscalar(x));
+    p.addParameter('showGrandMean', true, @(x) islogical(x) && isscalar(x));
+    p.addParameter('yLabel', "sig", @(x) ischar(x) || isstring(x));
+    p.addParameter('makeFigure', true, @(x) islogical(x) && isscalar(x));
+    parse(p, varargin{:});
+
+    timePerSet = p.Results.timePerSet;
+    timeUnit = string(p.Results.timeUnit);
+    showPatients = p.Results.showPatients;
+    showGrandMean = p.Results.showGrandMean;
+    yLabelText = string(p.Results.yLabel);
+    makeFigure = p.Results.makeFigure;
+
+    metabName = string(metabName);
+
+    % ------------------------------------------------------------
+    % Convert input to cell array of patients/datasets
+    % ------------------------------------------------------------
+    if iscell(tablesByDivisionInput)
+        patientTables = tablesByDivisionInput(:);
+
+    elseif isstruct(tablesByDivisionInput) && numel(tablesByDivisionInput) > 1
+        patientTables = arrayfun(@(s) s, tablesByDivisionInput, ...
+            'UniformOutput', false);
+
+    elseif isstruct(tablesByDivisionInput)
+        patientTables = {tablesByDivisionInput};
+
+    else
+        error('Input must be a tablesByDivision struct, struct array, or cell array of structs.');
+    end
+
+    nPatients = numel(patientTables);
+
+    % ------------------------------------------------------------
+    % Collect all division field names across patients
+    % ------------------------------------------------------------
+    divisionFields = strings(0, 1);
+
+    for pIdx = 1:nPatients
+        curFields = string(fieldnames(patientTables{pIdx}));
+
+        for fIdx = 1:numel(curFields)
+            if ~any(divisionFields == curFields(fIdx))
+                divisionFields(end+1, 1) = curFields(fIdx); %#ok<AGROW>
+            end
+        end
+    end
+
+    % Sort fields numerically by division number
+    divisionNumbers = nan(numel(divisionFields), 1);
+
+    for i = 1:numel(divisionFields)
+        divisionNumbers(i) = ParseDivisionNumber(divisionFields(i));
+    end
+
+    [~, order] = sort(divisionNumbers);
+    divisionFields = divisionFields(order);
+    divisionNumbers = divisionNumbers(order);
+
+    % ------------------------------------------------------------
+    % Prepare figure
+    % ------------------------------------------------------------
+    if makeFigure
+        figure;
+        hold on;
+    end
+
+    summary = struct;
+    summary.metabName = metabName;
+    summary.nPatients = nPatients;
+
+    % ------------------------------------------------------------
+    % Main loop over divisions
+    % ------------------------------------------------------------
+    for d = 1:numel(divisionFields)
+
+        curField = divisionFields(d);
+        nAvg = divisionNumbers(d);
+
+        if isnan(nAvg)
+            warning('Could not parse division number from field "%s". Skipping.', curField);
+            continue;
+        end
+
+        % --------------------------------------------------------
+        % Extract this metabolite from each patient for this division
+        % --------------------------------------------------------
+        patientVectors = cell(nPatients, 1);
+
+        for pIdx = 1:nPatients
+
+            curStruct = patientTables{pIdx};
+
+            if ~isfield(curStruct, curField)
+                patientVectors{pIdx} = [];
+                continue;
+            end
+
+            curTable = curStruct.(curField);
+
+            y = ExtractMetabVectorFromTable(curTable, metabName);
+
+            patientVectors{pIdx} = y;
+        end
+
+        % Remove patients that do not have this division/metabolite
+        hasData = cellfun(@(x) ~isempty(x), patientVectors);
+        patientVectors = patientVectors(hasData);
+
+        if isempty(patientVectors)
+            warning('No data found for metabolite "%s" in %s.', metabName, curField);
+            continue;
+        end
+
+        % --------------------------------------------------------
+        % Convert patient vectors into matrix:
+        %   rows    = patients
+        %   columns = time parts
+        % --------------------------------------------------------
+        nUsedPatients = numel(patientVectors);
+        nParts = max(cellfun(@numel, patientVectors));
+
+        Yraw = nan(nUsedPatients, nParts);
+
+        for pIdx = 1:nUsedPatients
+            curY = patientVectors{pIdx};
+            Yraw(pIdx, 1:numel(curY)) = curY;
+        end
+
+        % --------------------------------------------------------
+        % Build time axis
+        %
+        % If Division_6 means average 6 original sets per part:
+        %   part_1 center = 3
+        %   part_2 center = 9
+        %   part_3 center = 15
+        %
+        % Formula:
+        %   time = ((part index - 0.5) * nAvg) * timePerSet
+        % --------------------------------------------------------
+        partIdx = 1:nParts;
+        timeAxis = ((partIdx - 0.5) * nAvg) * timePerSet;
+
+        % --------------------------------------------------------
+        % Compute averages while ignoring zeros
+        % --------------------------------------------------------
+        YforMean = Yraw;
+        YforMean(YforMean == 0) = NaN;
+
+        meanAcrossPatients = mean(YforMean, 1, 'omitnan');
+        grandMean = mean(YforMean(:), 'omitnan');
+
+        nNonZeroPerTimePoint = sum(~isnan(YforMean), 1);
+
+        % --------------------------------------------------------
+        % Store summary
+        % --------------------------------------------------------
+        outField = char(curField);
+
+        summary.(outField).division = nAvg;
+        summary.(outField).time = timeAxis;
+        summary.(outField).rawValues = Yraw;
+        summary.(outField).valuesForMean = YforMean;
+        summary.(outField).meanAcrossPatients = meanAcrossPatients;
+        summary.(outField).grandMean = grandMean;
+        summary.(outField).nNonZeroPerTimePoint = nNonZeroPerTimePoint;
+        summary.(outField).nPatientsUsed = nUsedPatients;
+
+        % --------------------------------------------------------
+        % Plot
+        % --------------------------------------------------------
+        if makeFigure
+
+            % Raw patient traces, including zeros
+            if showPatients
+                for pIdx = 1:nUsedPatients
+                    plot(timeAxis, Yraw(pIdx, :), ':o', ...
+                        'HandleVisibility', 'off');
+                end
+            end
+
+            % Average time series, zeros ignored
+            plot(timeAxis, meanAcrossPatients, '-o', ...
+                'LineWidth', 2, ...
+                'DisplayName', sprintf('%s mean', curField));
+
+            % Grand mean across patients and time, zeros ignored
+            if showGrandMean && ~isnan(grandMean)
+                plot([timeAxis(1), timeAxis(end)], [grandMean, grandMean], '--', ...
+                    'LineWidth', 1, ...
+                    'DisplayName', sprintf('%s grand mean', curField));
+            end
+        end
+    end
+
+    % ------------------------------------------------------------
+    % Final plot formatting
+    % ------------------------------------------------------------
+    if makeFigure
+        xlabel(sprintf('Time (%s)', timeUnit));
+        ylabel(yLabelText, 'Interpreter', 'none');
+        title(sprintf('%s across divisions', metabName), 'Interpreter', 'none');
+        legend('Location', 'best');
+        grid on;
+        hold off;
+    end
+end
+
+function nAvg = ParseDivisionNumber(fieldName)
+    % Extracts the number from field names like:
+    %   Division_2
+    %   Division_6
+    %   Division_18
+    
+    fieldName = string(fieldName);
+    
+    tok = regexp(fieldName, 'Division_(\d+)', 'tokens', 'once');
+    
+    if isempty(tok)
+        nAvg = NaN;
+    else
+        nAvg = str2double(tok{1});
+    end
+end
+
+function y = ExtractMetabVectorFromTable(T, metabName)
+    % Extracts one metabolite row from a Division_* table.
+    %
+    % Expected table format:
+    %   name    part_1    part_2    part_3 ...
+    
+    y = [];
+    
+    metabName = string(metabName);
+    
+    if ~ismember("name", string(T.Properties.VariableNames))
+        error('The table does not contain a column named "name".');
+    end
+    
+    names = string(T.name);
+    
+    rowIdx = find(strcmpi(names, metabName), 1, 'first');
+    
+    if isempty(rowIdx)
+        warning('Metabolite "%s" was not found in this table.', metabName);
+        return;
+    end
+    
+    % Extract all columns except the first one, which is the metabolite name
+    y = T{rowIdx, 2:end};
+    
+    % Make sure output is numeric row vector
+    y = double(y);
+    y = reshape(y, 1, []);
+end
 %% Run main
 
 % Create and export basis function
@@ -276,7 +566,9 @@ end
 % Read coord files
 [quant, fitData] = readCoord(coordDir);
 coordTable = quant.metabTable;
-outTable = coordToMetabs(coordTable, metabList, "sig");
+tablesByDivision = coordToMetabs(coordTable, metabList, "sig");
 
+% Plot
+summaryNAA = PlotMetabAcrossDivisions(tablesByDivision, "NAA");
 
 
