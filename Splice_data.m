@@ -474,23 +474,30 @@ function summary = PlotMetabAcrossDivisions(tablesByDivisionInput, metabName, va
         % --------------------------------------------------------
         if makeFigure
 
+            ax = gca;
+            colorList = colororder(ax);
+            thisColor = colorList(mod(d-1, size(colorList,1)) + 1, :);
+        
             % Raw patient traces, including zeros
             if showPatients
                 for pIdx = 1:nUsedPatients
                     plot(timeAxis, Yraw(pIdx, :), ':o', ...
+                        'Color', thisColor, ...
                         'HandleVisibility', 'off');
                 end
             end
-
+        
             % Average time series, zeros ignored
             plot(timeAxis, meanAcrossPatients, '-o', ...
+                'Color', thisColor, ...
                 'LineWidth', 2, ...
                 'DisplayName', sprintf('%s mean', curField));
-
+        
             % Grand mean across patients and time, zeros ignored
             if showGrandMean && ~isnan(grandMean)
                 plot([timeAxis(1), timeAxis(end)], [grandMean, grandMean], '--', ...
-                    'LineWidth', 1, ...
+                    'Color', thisColor, ...
+                    'LineWidth', 1.5, ...
                     'DisplayName', sprintf('%s grand mean', curField));
             end
         end
@@ -503,7 +510,7 @@ function summary = PlotMetabAcrossDivisions(tablesByDivisionInput, metabName, va
         xlabel(sprintf('Time (%s)', timeUnit));
         ylabel(yLabelText, 'Interpreter', 'none');
         title(sprintf('%s across divisions', metabName), 'Interpreter', 'none');
-        legend('Location', 'best', 'Interpreter', 'none');
+        legend('Location', 'northeast', 'Interpreter', 'none');
         grid on;
         hold off;
     end
@@ -590,7 +597,7 @@ for i = 1:numel(analysisMetabList)
 end
 
 % Plot one chosen metabolite
-chosenMetab = "Cr+PCr";
+chosenMetab = "NAA+NAAG";
 
 summaryChosen = PlotMetabAcrossDivisions( ...
     tablesByDivision, ...
