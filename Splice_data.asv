@@ -5,9 +5,11 @@ img = VDIIO.LoadTwix(['C:\Users\doronkatzir1\Desktop\Thesis_Lab\Data\' ...
     'meas_MID00090_FID32072_eja_svs_slaser_TE_80_r0.dat'], ...
     'isICEChop', true);
 setSizes = [1, 2, 4, 6, 9, 12, 18, 36];
-metabList = ["NAA", "NAAG", "Cr", "PCr", "GPC", "PCh", "Glu", "Gln", ...
+basisMetabList = ["NAA", "NAAG", "Cr", "PCr", "GPC", "PCh", "Glu", "Gln", ...
         "GABA", "GSH", "Tau", "Asc", "Glc", "Ace", "mI", "sI", "Asp", ...
         "Lac"];
+sumMetabList = ["GPC+PCh", "NAA+NAAG", "Cr+PCr", "Glu+Gln"];
+analysisMetabList = [basisMetabList, sumMetabList];
 coordDir = 'C:\Users\doronkatzir1\Desktop\Thesis_Lab\LCMFit';
 
 
@@ -557,7 +559,7 @@ end
 %% Run main
 
 % Create and export basis function
-[basisFunc, TE] = createBasis(img, metabList);
+[basisFunc, TE] = createBasis(img, basisMetabList);
 basisName = "For_division_" + erase(img.name, " ") + ".basis";
 basisFunc.ExportBasisToLCModel(basisName, 'TE', TE);
 
@@ -569,24 +571,32 @@ end
 % Read coord files
 [quant, fitData] = readCoord(coordDir);
 coordTable = quant.metabTable;
-tablesByDivision = coordToMetabs(coordTable, metabList, "sig");
+tablesByDivision = coordToMetabs(coordTable, analysisMetabList, "sig");
 
 % Plot
 summaryByMetab = struct;
 
-for i = 1:numel(metabList)
+for i = 1:numel(analysisMetabList)
 
-    metabName = metabList(i);
-
-    fprintf('Plotting %s...\n', metabName);
-
+    metabName = analysisMetabList(i);
     fieldName = matlab.lang.makeValidName(metabName);
 
     summaryByMetab.(fieldName) = PlotMetabAcrossDivisions( ...
         tablesByDivision, ...
         metabName, ...
-        'yLabel', "sig");
+        'yLabel', "sig", ...
+        'makeFigure', false);
+
 end
+
+% Plot one chosen metabolite
+chosenMetab = "NAA+NAAG";
+
+summaryChosen = PlotMetabAcrossDivisions( ...
+    tablesByDivision, ...
+    chosenMetab, ...
+    'yLabel', "sig", ...
+    'makeFigure', true);
 
 
 
