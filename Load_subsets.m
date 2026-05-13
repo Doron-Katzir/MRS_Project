@@ -24,7 +24,11 @@ for i = 1:numel(analysisMetabList)
 
 end
 
-% Plot one chosen metabolite
+% Plot for all chosen metabolites
+tablesByMetric.sig = coordToMetabs(coordTable, analysisMetabList, "sig");
+tablesByMetric.ratioCr = coordToMetabs(coordTable, analysisMetabList, "ratioCr");
+tablesByMetric.CRLB = coordToMetabs(coordTable, analysisMetabList, "CRLB");
+
 for metab = sumMetabList
     chosenMetab = metab;
     
@@ -33,6 +37,12 @@ for metab = sumMetabList
         chosenMetab, ...
         'yLabel', "sig", ...
         'makeFigure', true);
+
+    grandTables = PlotMetabGrandAverageBarsMultiMetric( ...
+        tablesByMetric, ...
+        metab, ...
+        'barWidth', 0.35, ...
+        'yPaddingFrac', 0.30);
 end
 
 %% Functions
@@ -211,6 +221,9 @@ function summary = PlotMetabAcrossDivisions(tablesByDivisionInput, metabName, va
     p.addParameter('showGrandMean', true, @(x) islogical(x) && isscalar(x));
     p.addParameter('yLabel', "sig", @(x) ischar(x) || isstring(x));
     p.addParameter('makeFigure', true, @(x) islogical(x) && isscalar(x));
+    p.addParameter('barWidth', 0.45, @(x) isnumeric(x) && isscalar(x));
+    p.addParameter('zoomY', true, @(x) islogical(x) && isscalar(x));
+    p.addParameter('yPaddingFrac', 0.15, @(x) isnumeric(x) && isscalar(x));
     parse(p, varargin{:});
 
     timePerSet = p.Results.timePerSet;
@@ -469,4 +482,342 @@ function y = ExtractMetabVectorFromTable(T, metabName)
     % Make sure output is numeric row vector
     y = double(y);
     y = reshape(y, 1, []);
+end
+
+function grandTable = PlotMetabGrandAverageBars(tablesByDivisionInput, ...
+    metabList, varargin)
+    % PlotMetabGrandAverageBars
+    %
+    % For each chosen metabolite, plots a bar plot:
+    %   x-axis    = division size
+    %   bar value = grand average across time, ignoring zeros
+    %   error bar = standard deviation across time, ignoring zeros
+    %
+    % Supports:
+    %   Single dataset:
+    %       PlotMetabGrandAverageBars(tablesByDivision, "NAA")
+    %
+    %   Multiple metabolites:
+    %       PlotMetabGrandAverageBars(tablesByDivision, ["NAA", "Glu", "Cr+PCr"])
+    %
+    %   Future multiple patients:
+    %       PlotMetabGrandAverageBars({tablesPatient1, tablesPatient2}, "NAA")
+    
+        p = inputParser;
+        p.addParameter('divisions', [], @(x) isempty(x) || isnumeric(x));
+        p.addParameter('ignoreZeros', true, @(x) islogical(x) && isscalar(x));
+        p.addParameter('yLabel', "sig", @(x) ischar(x) || isstring(x));
+        p.addParameter('makeFigure', true, @(x) islogical(x) && isscalar(x));
+        parse(p, varargin{:});
+    
+        requestedDivisions = p.Results.divisions;
+        ignoreZeros = p.Results.ignoreZeros;
+        yLabelText = string(p.Results.yLabel);
+        makeFigure = p.Results.makeFigure;
+    
+        metabList = string(metabList(:));
+    
+        % ------------------------------------------------------------
+        % Convert input to cell array of patients/datasets
+        % ------------------------------------------------------------
+        if iscell(tablesByDivisionInput)
+            patientTables = tablesByDivisionInput(:);
+    
+        elseif isstruct(tablesByDivisionInput) && numel(tablesByDivisionInput) > 1
+            patientTables = num2cell(tablesByDivisionInput);
+    
+        elseif isstruct(tablesByDivisionInput)
+            patientTables = {tablesByDivisionInput};
+    
+        else
+            error('Input must be a tablesByDivision struct, struct array, or cell array of structs.');
+        end
+    
+        nPatients = numel(patientTables);
+    
+        % ------------------------------------------------------------
+        % Collect all division fields
+        % ------------------------------------------------------------
+        divisionFields = strings(0, 1);
+    
+        for pIdx = 1:nPatients
+            curFields = string(fieldnames(patientTables{pIdx}));
+    
+            for fIdx = 1:numel(curFields)
+                if ~any(divisionFields == curFields(fIdx))
+                    divisionFields(end+1, 1) = curFields(fIdx); %#ok<AGROW>
+                end
+            end
+        end
+    
+        divisionNumbers = nan(numel(divisionFields), 1);
+    
+        for i = 1:numel(divisionFields)
+            divisionNumbers(i) = ParseDivisionNumber(divisionFields(i));
+        end
+    
+        [~, order] = sort(divisionNumbers);
+        divisionFields = divisionFields(order);
+        divisionNumbers = divisionNumbers(order);
+    
+        % Optional: keep only requested divisions
+        if ~isempty(requestedDivisions)
+            keepIdx = ismember(divisionNumbers, requestedDivisions);
+    
+            if ~any(keepIdx)
+                error('None of the requested divisions were found.');
+            end
+    
+            divisionFields = divisionFields(keepIdx);
+            divisionNumbers = divisionNumbers(keepIdx);
+        end
+    
+        % ------------------------------------------------------------
+        % Compute grand mean and std
+        % ------------------------------------------------------------
+        rows = {};
+    
+        for m = 1:numel(metabList)
+    
+            metabName = metabList(m);
+    
+            grandMean = nan(numel(divisionFields), 1);
+            grandStd  = nan(numel(divisionFields), 1);
+            nValid    = nan(numel(divisionFields), 1);
+    
+            for d = 1:numel(divisionFields)
+    
+                curField = divisionFields(d);
+                curDivision = divisionNumbers(d);
+    
+                allValues = [];
+    
+                for pIdx = 1:nPatients
+    
+                    curStruct = patientTables{pIdx};
+    
+                    if ~isfield(curStruct, curField)
+                        continue;
+                    end
+    
+                    curTable = curStruct.(curField);
+    
+                    y = ExtractMetabVectorFromTable(curTable, metabName);
+    
+                    if isempty(y)
+                        continue;
+                    end
+    
+                    y = double(y(:));
+    
+                    if ignoreZeros
+                        y(y == 0) = NaN;
+                    end
+    
+                    allValues = [allValues; y]; %#ok<AGROW>
+                end
+    
+                validValues = allValues(~isnan(allValues));
+    
+                if ~isempty(validValues)
+                    grandMean(d) = mean(validValues);
+                    grandStd(d)  = std(validValues, 0);
+                    nValid(d)    = numel(validValues);
+                else
+                    grandMean(d) = NaN;
+                    grandStd(d)  = NaN;
+                    nValid(d)    = 0;
+                end
+    
+                rows(end+1, :) = { ...
+                    metabName, ...
+                    curField, ...
+                    curDivision, ...
+                    grandMean(d), ...
+                    grandStd(d), ...
+                    nValid(d), ...
+                    nPatients}; %#ok<AGROW>
+            end
+    
+            % --------------------------------------------------------
+            % Plot one bar figure per metabolite
+            % --------------------------------------------------------
+            if makeFigure
+            
+                figure;
+                hold on;
+            
+                x = 1:numel(divisionNumbers);
+                xLabels = string(divisionNumbers);
+            
+                bar(x, grandMean);
+            
+                errorbar(x, grandMean, grandStd, ...
+                    'k', ...
+                    'LineStyle', 'none', ...
+                    'LineWidth', 1.5);
+            
+                xticks(x);
+                xticklabels(xLabels);
+            
+                xlabel('Division size / sets averaged');
+                ylabel(yLabelText, 'Interpreter', 'none');
+            
+                title(sprintf('%s grand average across time', metabName), ...
+                    'Interpreter', 'none');
+            
+                grid on;
+                hold off;
+            end
+        end
+    
+        grandTable = cell2table(rows, ...
+            'VariableNames', { ...
+            'metabolite', ...
+            'divisionField', ...
+            'division', ...
+            'grandMean', ...
+            'grandStd', ...
+            'nValidValues', ...
+            'nPatients'});
+    
+        grandTable.metabolite = string(grandTable.metabolite);
+        grandTable.divisionField = string(grandTable.divisionField);
+end
+
+
+function grandTablesByMetric = PlotMetabGrandAverageBarsMultiMetric( ...
+    tablesByMetric, metabList, varargin)
+    % PlotMetabGrandAverageBarsMultiMetric
+    %
+    % For each metabolite, plots bar plots for:
+    %   sig
+    %   ratioCr
+    %   CRLB
+    %
+    % Input:
+    %   tablesByMetric.sig
+    %   tablesByMetric.ratioCr
+    %   tablesByMetric.CRLB
+    %
+    % Each field should be a tablesByDivision struct.
+    
+    p = inputParser;
+    p.addParameter('metrics', ["sig", "ratioCr", "CRLB"], ...
+        @(x) ischar(x) || isstring(x) || iscellstr(x));
+    p.addParameter('divisions', [], @(x) isempty(x) || isnumeric(x));
+    p.addParameter('ignoreZeros', true, @(x) islogical(x) && isscalar(x));
+    p.addParameter('barWidth', 0.45, @(x) isnumeric(x) && isscalar(x));
+    p.addParameter('zoomY', true, @(x) islogical(x) && isscalar(x));
+    p.addParameter('yPaddingFrac', 0.15, @(x) isnumeric(x) && isscalar(x));
+    parse(p, varargin{:});
+    
+    metrics = string(p.Results.metrics);
+    requestedDivisions = p.Results.divisions;
+    ignoreZeros = p.Results.ignoreZeros;
+    barWidth = p.Results.barWidth;
+    zoomY = p.Results.zoomY;
+    yPaddingFrac = p.Results.yPaddingFrac;
+    
+    metabList = string(metabList(:));
+    
+    grandTablesByMetric = struct;
+    
+    for m = 1:numel(metabList)
+    
+        metabName = metabList(m);
+    
+        figure;
+        tiledlayout(numel(metrics), 1, 'TileSpacing', 'compact');
+    
+        for k = 1:numel(metrics)
+    
+            metricName = metrics(k);
+            metricField = matlab.lang.makeValidName(metricName);
+    
+            if ~isfield(tablesByMetric, metricField)
+                error('tablesByMetric is missing field "%s".', metricField);
+            end
+    
+            nexttile;
+    
+            grandTable = PlotMetabGrandAverageBars( ...
+                tablesByMetric.(metricField), ...
+                metabName, ...
+                'divisions', requestedDivisions, ...
+                'ignoreZeros', ignoreZeros, ...
+                'yLabel', metricName, ...
+                'makeFigure', false);
+    
+            % Store table
+            metabField = matlab.lang.makeValidName(metabName);
+    
+            if ~isfield(grandTablesByMetric, metricField)
+                grandTablesByMetric.(metricField) = struct;
+            end
+    
+            grandTablesByMetric.(metricField).(metabField) = grandTable;
+    
+            % Plot manually into current tile
+            Tm = grandTable(grandTable.metabolite == metabName, :);
+            Tm = sortrows(Tm, 'division');
+    
+            x = 1:height(Tm);
+            xLabels = string(Tm.division);
+    
+            bar(x, Tm.grandMean, barWidth);
+            hold on;
+            
+            errorbar(x, Tm.grandMean, Tm.grandStd, ...
+                'k', ...
+                'LineStyle', 'none', ...
+                'LineWidth', 1.5);
+            
+            xticks(x);
+            xticklabels(xLabels);
+            
+            xlabel('Division size / sets averaged');
+            ylabel(metricName, 'Interpreter', 'none');
+            
+            title(sprintf('%s: %s', metabName, metricName), ...
+                'Interpreter', 'none');
+            
+            grid on;
+            
+            % ------------------------------------------------------------
+            % Zoom y-axis around the data so small differences are visible
+            % ------------------------------------------------------------
+            if zoomY
+            
+                yLow = Tm.grandMean - Tm.grandStd;
+                yHigh = Tm.grandMean + Tm.grandStd;
+            
+                yLow = yLow(~isnan(yLow));
+                yHigh = yHigh(~isnan(yHigh));
+            
+                if ~isempty(yLow) && ~isempty(yHigh)
+            
+                    yMin = min(yLow);
+                    yMax = max(yHigh);
+            
+                    yRange = yMax - yMin;
+            
+                    if yRange == 0
+                        % Handles almost-flat data, e.g. ratioCr for Cr+PCr
+                        yRange = abs(yMax) * 0.05;
+            
+                        if yRange == 0
+                            yRange = 1;
+                        end
+                    end
+            
+                    pad = yPaddingFrac * yRange;
+            
+                    ylim([yMin - pad, yMax + pad]);
+                end
+            end
+            
+            hold off;
+        end
+    end
 end
