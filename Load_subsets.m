@@ -4,7 +4,7 @@ cfg = ProjectConfig();
 
 %% Main
 % Read coord files
-[quant, fitData] = readCoord(cfg.paths.coordDir);
+[quant, fitData, coordFiles] = readCoord(cfg.paths.coordDir);
 coordTable = quant.metabTable;
 analysisMetabList = cfg.metabolites.analysis;
 tablesByDivision = coordToMetabs(coordTable, analysisMetabList, "sig");
@@ -47,14 +47,23 @@ for metab = sumMetabList
         'yPaddingFrac', 0.30);
 end
 
+% Plot spectra
+PlotDivisionFittedSpectraStack(fitData, coordFiles, 1);
+
 %% Functions
 
-function [quant, fitData] = readCoord(coordDir)
+function [quant, fitData, coordFiles] = readCoord(coordDir)
+
     coordInfo = dir(fullfile(coordDir, "*.coord"));
     
     if isempty(coordInfo)
         error('No .coord files found in: %s', coordDir);
     end
+
+    % Sort filenames so part order is reproducible
+    fileNames = string({coordInfo.name});
+    [~, order] = sort(fileNames);
+    coordInfo = coordInfo(order);
     
     coordFiles = strings(numel(coordInfo), 1);
     
@@ -822,4 +831,188 @@ function grandTablesByMetric = PlotMetabGrandAverageBarsMultiMetric( ...
             hold off;
         end
     end
+end
+
+function PlotDivisionFittedSpectraStack(fitData, coordFiles, divisionNumber, varargin)
+% PlotDivisionFittedSpectraStack
+%
+% LCModel-style stacked plot where each line is one fitted spectrum
+% from a subdivision part.
+%
+% Example:
+%   PlotDivisionFittedSpectraStack(fitData, coordFiles, 6);
+%
+% Optional:
+%   'dataField'        - "fitData", "phasedData", "residual", "baseline"
+%   'ppmRange'         - [0.2 4.2]
+%   'normalize'        - true/false
+%   'spacingFactor'    - controls vertical spacing
+%   'reverseXAxis'     - true/false
+%   'lineWidth'        - curve line width
+
+    p = inputParser;
+    p.addParameter('dataField', "fitData", @(x) ischar(x) || isstring(x));
+    p.addParameter('ppmRange', [0.2 4.2], ...
+        @(x) isempty(x) || (isnumeric(x) && numel(x) == 2));
+    p.addParameter('normalize', false, @(x) islogical(x) && isscalar(x));
+    p.addParameter('spacingFactor', 1.15, @(x) isnumeric(x) && isscalar(x));
+    p.addParameter('reverseXAxis', true, @(x) islogical(x) && isscalar(x));
+    p.addParameter('lineWidth', 1.0, @(x) isnumeric(x) && isscalar(x));
+    parse(p, varargin{:});
+
+    dataField = string(p.Results.dataField);
+    ppmRange = p.Results.ppmRange;
+    normalize = p.Results.normalize;
+    spacingFactor = p.Results.spacingFactor;
+    reverseXAxis = p.Results.reverseXAxis;
+    lineWidth = p.Results.lineWidth;
+
+    coordFiles = string(coordFiles(:));
+
+    if numel(coordFiles) ~= numel(fitData)
+        error('coordFiles and fitData must have the same number of elements.');
+    end
+
+    if ~isfield(fitData, char(dataField))
+        error('fitData does not contain field "%s". Available fields are: %s', ...
+            dataField, strjoin(string(fieldnames(fitData)), ", "));
+    end
+
+    % ------------------------------------------------------------
+    % Parse division and part from filenames
+    % ------------------------------------------------------------
+    nFiles = numel(coordFiles);
+    division = nan(nFiles, 1);
+    part = nan(nFiles, 1);
+
+    for i = 1:nFiles
+
+        [~, baseName, ext] = fileparts(coordFiles(i));
+        curName = baseName + ext;
+
+        tok = regexp(curName, ...
+            'Division_(\d+)_(?:part_)?(\d+)\.basis\.coord', ...
+            'tokens', 'once');
+
+        if isempty(tok)
+            warning('Could not parse filename: %s', curName);
+            continue;
+        end
+
+        division(i) = str2double(tok{1});
+        part(i) = str2double(tok{2});
+    end
+
+    % ------------------------------------------------------------
+    % Select requested division
+    % ------------------------------------------------------------
+    idx = find(division == divisionNumber);
+
+    if isempty(idx)
+        error('No fitted spectra found for Division_%d.', divisionNumber);
+    end
+
+    [~, order] = sort(part(idx));
+    idx = idx(order);
+    selectedParts = part(idx);
+
+    nParts = numel(idx);
+
+    % ------------------------------------------------------------
+    % First pass: collect spectra
+    % ------------------------------------------------------------
+    spectra = cell(nParts, 1);
+    xCell = cell(nParts, 1);
+    maxAbsVals = nan(nParts, 1);
+
+    for k = 1:nParts
+
+        curIdx = idx(k);
+
+        x = double(fitData(curIdx).axis(:));
+        y = real(double(fitData(curIdx).(char(dataField))(:)));
+
+        if ~isempty(ppmRange)
+            lo = min(ppmRange);
+            hi = max(ppmRange);
+            keep = x >= lo & x <= hi;
+
+            x = x(keep);
+            y = y(keep);
+        end
+
+        if normalize
+            scaleVal = max(abs(y), [], 'omitnan');
+
+            if scaleVal ~= 0 && ~isnan(scaleVal)
+                y = y ./ scaleVal;
+            end
+        end
+
+        xCell{k} = x;
+        spectra{k} = y;
+        maxAbsVals(k) = max(abs(y), [], 'omitnan');
+    end
+
+    % Vertical spacing
+    baseSpacing = max(maxAbsVals, [], 'omitnan') * spacingFactor;
+
+    if baseSpacing == 0 || isnan(baseSpacing)
+        baseSpacing = 1;
+    end
+
+    % ------------------------------------------------------------
+    % Plot
+    % ------------------------------------------------------------
+    figure;
+    hold on;
+
+    colorMap = lines(nParts);
+
+    for k = 1:nParts
+
+        x = xCell{k};
+        y = spectra{k};
+
+        % part_1 at top, later parts below
+        yOffset = -(k - 1) * baseSpacing;
+
+        plot(x, y + yOffset, ...
+            'Color', colorMap(k, :), ...
+            'LineWidth', lineWidth);
+
+        % Label on right side of plot
+        labelX = min(x);
+
+        text(labelX, yOffset, sprintf('part_%d', selectedParts(k)), ...
+            'HorizontalAlignment', 'left', ...
+            'VerticalAlignment', 'middle', ...
+            'Interpreter', 'none', ...
+            'Color', colorMap(k, :));
+    end
+
+    if reverseXAxis
+        set(gca, 'XDir', 'reverse');
+    end
+
+    xlabel('ppm');
+
+    if normalize
+        ylabel(sprintf('%s, normalized and stacked', dataField), ...
+            'Interpreter', 'none');
+    else
+        ylabel(sprintf('%s, stacked', dataField), ...
+            'Interpreter', 'none');
+    end
+
+    title(sprintf('Division_%d stacked fitted spectra', divisionNumber), ...
+        'Interpreter', 'none');
+
+    grid on;
+    box on;
+
+    % Remove y tick labels because vertical position is artificial
+    yticks([]);
+
+    hold off;
 end
