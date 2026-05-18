@@ -49,11 +49,11 @@ end
 
 %% Functions
 
-function [quant, fitData] = readCoord(coordDir)
-    coordInfo = dir(fullfile(coordDir, "*.coord"));
+function [quant, fitData] = readCoord(cfg.paths.coordDir)
+    coordInfo = dir(fullfile(cfg.paths.coordDir, "*.coord"));
     
     if isempty(coordInfo)
-        error('No .coord files found in: %s', coordDir);
+        error('No .coord files found in: %s', cfg.paths.coordDir);
     end
     
     coordFiles = strings(numel(coordInfo), 1);
