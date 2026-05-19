@@ -50,6 +50,18 @@ end
 % Plot spectra
 PlotDivisionFittedSpectraStack(fitData, coordFiles, 1);
 
+% ANOVA test
+anovaSig = RunExploratoryDivisionAnova( ...
+    tablesByDivision, ...
+    analysisMetabList, ...
+    'ignoreZeros', true, ...
+    'showPlots', false);
+
+disp(anovaSig)
+
+anovaSig = sortrows(anovaSig, 'pValue');
+disp(anovaSig)
+
 %% Functions
 
 function [quant, fitData, coordFiles] = readCoord(coordDir)
@@ -1015,4 +1027,168 @@ function PlotDivisionFittedSpectraStack(fitData, coordFiles, divisionNumber, var
     yticks([]);
 
     hold off;
+end
+
+function anovaData = BuildDivisionLongTable(tablesByDivisionInput, metabList, varargin)
+    % BuildDivisionLongTable
+    %
+    % Converts tablesByDivision into long-format data:
+    %
+    %   patientIndex | metabolite | division | part | value
+    %
+    % Supports:
+    %   single patient:
+    %       BuildDivisionLongTable(tablesByDivision, metabList)
+    %
+    %   multiple patients:
+    %       BuildDivisionLongTable({tablesP1, tablesP2}, metabList)
+    
+    p = inputParser;
+    p.addParameter('ignoreZeros', true, @(x) islogical(x) && isscalar(x));
+    parse(p, varargin{:});
+    
+    ignoreZeros = p.Results.ignoreZeros;
+    metabList = string(metabList(:));
+    
+    % Convert input to cell array of patients
+    if iscell(tablesByDivisionInput)
+        patientTables = tablesByDivisionInput(:);
+    elseif isstruct(tablesByDivisionInput) && numel(tablesByDivisionInput) > 1
+        patientTables = num2cell(tablesByDivisionInput);
+    elseif isstruct(tablesByDivisionInput)
+        patientTables = {tablesByDivisionInput};
+    else
+        error('Input must be a tablesByDivision struct, struct array, or cell array of structs.');
+    end
+    
+    rows = {};
+    
+    for pIdx = 1:numel(patientTables)
+    
+        curStruct = patientTables{pIdx};
+        divisionFields = string(fieldnames(curStruct));
+    
+        for d = 1:numel(divisionFields)
+    
+            curField = divisionFields(d);
+            curDivision = ParseDivisionNumber(curField);
+    
+            if isnan(curDivision)
+                continue;
+            end
+    
+            curTable = curStruct.(curField);
+    
+            for m = 1:numel(metabList)
+    
+                metabName = metabList(m);
+    
+                y = ExtractMetabVectorFromTable(curTable, metabName);
+    
+                if isempty(y)
+                    continue;
+                end
+    
+                y = double(y(:));
+    
+                for partIdx = 1:numel(y)
+    
+                    curValue = y(partIdx);
+    
+                    if ignoreZeros && curValue == 0
+                        curValue = NaN;
+                    end
+    
+                    rows(end+1, :) = { ...
+                        pIdx, ...
+                        metabName, ...
+                        curDivision, ...
+                        partIdx, ...
+                        curValue}; %#ok<AGROW>
+                end
+            end
+        end
+    end
+    
+    anovaData = cell2table(rows, ...
+        'VariableNames', { ...
+        'patientIndex', ...
+        'metabolite', ...
+        'division', ...
+        'part', ...
+        'value'});
+    
+    anovaData.metabolite = string(anovaData.metabolite);
+end
+
+function anovaResults = RunExploratoryDivisionAnova(tablesByDivision, metabList, varargin)
+    % RunExploratoryDivisionAnova
+    %
+    % Exploratory one-way ANOVA:
+    %   value ~ division
+    %
+    % This treats division parts as observations.
+    % For one subject this is exploratory, not definitive inference.
+    
+    p = inputParser;
+    p.addParameter('ignoreZeros', true, @(x) islogical(x) && isscalar(x));
+    p.addParameter('showPlots', false, @(x) islogical(x) && isscalar(x));
+    parse(p, varargin{:});
+    
+    ignoreZeros = p.Results.ignoreZeros;
+    showPlots = p.Results.showPlots;
+    
+    metabList = string(metabList(:));
+    
+    anovaData = BuildDivisionLongTable(tablesByDivision, metabList, ...
+        'ignoreZeros', ignoreZeros);
+    
+    rows = {};
+    
+    for m = 1:numel(metabList)
+    
+        metabName = metabList(m);
+    
+        Tm = anovaData(anovaData.metabolite == metabName, :);
+        Tm = Tm(~isnan(Tm.value), :);
+    
+        if height(Tm) < 2 || numel(unique(Tm.division)) < 2
+            rows(end+1, :) = {metabName, NaN, NaN, NaN, NaN}; %#ok<AGROW>
+            continue;
+        end
+    
+        if showPlots
+            [pVal, tbl, stats] = anova1(Tm.value, categorical(Tm.division));
+        else
+            [pVal, tbl, stats] = anova1(Tm.value, categorical(Tm.division), 'off');
+        end
+    
+        % Extract F statistic if available
+        try
+            F = tbl{2, 5};
+            dfBetween = tbl{2, 3};
+            dfWithin = tbl{3, 3};
+        catch
+            F = NaN;
+            dfBetween = NaN;
+            dfWithin = NaN;
+        end
+    
+        rows(end+1, :) = { ...
+            metabName, ...
+            pVal, ...
+            F, ...
+            dfBetween, ...
+            dfWithin}; %#ok<AGROW>
+    end
+    
+    anovaResults = cell2table(rows, ...
+        'VariableNames', { ...
+        'metabolite', ...
+        'pValue', ...
+        'F', ...
+        'dfBetween', ...
+        'dfWithin'});
+    
+    anovaResults.metabolite = string(anovaResults.metabolite);
 end
