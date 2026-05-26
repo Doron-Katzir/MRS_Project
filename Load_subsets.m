@@ -48,7 +48,7 @@ for metab = sumMetabList
 end
 
 % Plot spectra
-PlotDivisionFittedSpectraStack(fitData, coordFiles, 1);
+PlotDivisionFittedSpectraStack(fitData, coordFiles, 6);
 
 % ANOVA test
 anovaSig = RunExploratoryDivisionAnova( ...
@@ -56,8 +56,6 @@ anovaSig = RunExploratoryDivisionAnova( ...
     analysisMetabList, ...
     'ignoreZeros', true, ...
     'showPlots', false);
-
-disp(anovaSig)
 
 anovaSig = sortrows(anovaSig, 'pValue');
 disp(anovaSig)
