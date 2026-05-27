@@ -51,14 +51,34 @@ end
 PlotDivisionFittedSpectraStack(fitData, coordFiles, 6);
 
 % ANOVA test
-anovaSig = RunExploratoryDivisionAnova( ...
-    tablesByDivision, ...
-    analysisMetabList, ...
-    'ignoreZeros', true, ...
-    'showPlots', false);
+% anovaSig = RunExploratoryDivisionAnova( ...
+%     tablesByDivision, ...
+%     analysisMetabList, ...
+%     'ignoreZeros', true, ...
+%     'showPlots', false);
 
-anovaSig = sortrows(anovaSig, 'pValue');
-disp(anovaSig)
+% anovaSig = sortrows(anovaSig, 'pValue');
+% disp(anovaSig)
+
+tablesByMetric.sig = coordToMetabs(coordTable, analysisMetabList, "sig");
+lmmTableSig = BuildDivisionID_LMMTable( ...
+    tablesByMetric.sig, ...
+    analysisMetabList, ...
+    'ignoreZeros', true);
+
+modelTableSig = BuildDivisionID_LMMTable( ...
+    tablesByMetric.sig, ...
+    analysisMetabList, ...
+    'ignoreZeros', true);
+
+resultNAA_fixed = FitDivisionFixedEffectModel( ...
+    modelTableSig, ...
+    "NAA", ...
+    'referenceDivision', 36);
+
+resultNAA_fixed.coefficients
+resultNAA_fixed.anovaTable
+resultNAA_fixed.biasTable
 
 %% Functions
 
@@ -1189,4 +1209,275 @@ function anovaResults = RunExploratoryDivisionAnova(tablesByDivision, metabList,
         'dfWithin'});
     
     anovaResults.metabolite = string(anovaResults.metabolite);
+end
+
+
+function lmmTable = BuildDivisionID_LMMTable(tablesByDivision, metabList, varargin)
+    % BuildDivisionID_LMMTable
+    %
+    % Builds a long-format table for:
+    %
+    %   concentration ~ logScansPerGroup + (1|divisionID)
+    %
+    % Each row is one fitted spectrum/subdivision part:
+    %
+    %   metabolite | concentration | scansPerGroup | logScansPerGroup | divisionID | part
+    
+    p = inputParser;
+    p.addParameter('ignoreZeros', true, @(x) islogical(x) && isscalar(x));
+    parse(p, varargin{:});
+    
+    ignoreZeros = p.Results.ignoreZeros;
+    metabList = string(metabList(:));
+    
+    divisionFields = string(fieldnames(tablesByDivision));
+    
+    rows = {};
+    
+    for d = 1:numel(divisionFields)
+    
+        curField = divisionFields(d);
+        scansPerGroup = ParseDivisionNumber(curField);
+    
+        if isnan(scansPerGroup)
+            continue;
+        end
+    
+        curTable = tablesByDivision.(curField);
+        divisionID = "Division_" + string(scansPerGroup);
+    
+        for m = 1:numel(metabList)
+    
+            metabName = metabList(m);
+    
+            concentrations = ExtractMetabVectorFromTable(curTable, metabName);
+    
+            if isempty(concentrations)
+                continue;
+            end
+    
+            concentrations = double(concentrations(:));
+    
+            for partIdx = 1:numel(concentrations)
+    
+                curConc = concentrations(partIdx);
+    
+                if ignoreZeros && curConc == 0
+                    curConc = NaN;
+                end
+    
+                if isnan(curConc)
+                    continue;
+                end
+    
+                rows(end+1, :) = { ...
+                    metabName, ...
+                    curConc, ...
+                    scansPerGroup, ...
+                    log(scansPerGroup), ...
+                    divisionID, ...
+                    partIdx}; %#ok<AGROW>
+            end
+        end
+    end
+    
+    lmmTable = cell2table(rows, ...
+        'VariableNames', { ...
+        'metabolite', ...
+        'concentration', ...
+        'scansPerGroup', ...
+        'logScansPerGroup', ...
+        'divisionID', ...
+        'part'});
+    
+    lmmTable.metabolite = string(lmmTable.metabolite);
+    lmmTable.divisionID = categorical(string(lmmTable.divisionID));
+end
+
+function result = FitDivisionFixedEffectModel(modelTable, metabName, varargin)
+% FitDivisionFixedEffectModel
+%
+% Implements:
+%
+%   X_ij = beta0 + alpha_i + epsilon_ij
+%
+% where:
+%   X_ij    = concentration for division i, part j
+%   beta0   = mean of reference division
+%   alpha_i = fixed effect of division i relative to reference
+%
+% MATLAB formula:
+%   concentration ~ divisionCat
+
+    p = inputParser;
+    p.addParameter('referenceDivision', 36, @(x) isnumeric(x) && isscalar(x));
+    parse(p, varargin{:});
+
+    referenceDivision = p.Results.referenceDivision;
+    metabName = string(metabName);
+
+    % Keep only requested metabolite
+    Tm = modelTable(strcmpi(modelTable.metabolite, metabName), :);
+
+    if isempty(Tm)
+        error('Metabolite "%s" was not found in modelTable.', metabName);
+    end
+
+    Tm = sortrows(Tm, {'scansPerGroup', 'part'});
+
+    divisions = unique(Tm.scansPerGroup);
+    divisions = sort(divisions(:));
+
+    if ~ismember(referenceDivision, divisions)
+        error('Reference division %d was not found for metabolite "%s".', ...
+            referenceDivision, metabName);
+    end
+
+    % ------------------------------------------------------------
+    % Create categorical division variable
+    % Put reference division first so beta0 is reference mean.
+    % ------------------------------------------------------------
+    allLabels = "Division_" + string(divisions(:));
+    refLabel = "Division_" + string(referenceDivision);
+    otherLabels = setdiff(allLabels, refLabel, 'stable');
+
+    divOrder = [refLabel; otherLabels(:)];
+
+    Tm.divisionCat = categorical( ...
+        "Division_" + string(Tm.scansPerGroup(:)), ...
+        divOrder);
+
+    % ------------------------------------------------------------
+    % Fit fixed-effect model
+    % ------------------------------------------------------------
+    formula = 'concentration ~ divisionCat';
+    mdl = fitlm(Tm, formula);
+
+    % ------------------------------------------------------------
+    % Predict mean for each division
+    % ------------------------------------------------------------
+    predT = table;
+    predT.divisionCat = categorical( ...
+        "Division_" + string(divisions(:)), ...
+        divOrder);
+
+    predictedMean = predict(mdl, predT);
+
+    refIdx = divisions == referenceDivision;
+    referenceMean = predictedMean(refIdx);
+
+    alphaEstimate = predictedMean - referenceMean;
+    percentBias = 100 * alphaEstimate ./ referenceMean;
+
+    % Raw observed means and counts
+    observedMean = nan(numel(divisions), 1);
+    observedStd = nan(numel(divisions), 1);
+    nValues = nan(numel(divisions), 1);
+
+    for i = 1:numel(divisions)
+        curVals = Tm.concentration(Tm.scansPerGroup == divisions(i));
+        observedMean(i) = mean(curVals, 'omitnan');
+        observedStd(i) = std(curVals, 0, 'omitnan');
+        nValues(i) = sum(~isnan(curVals));
+    end
+
+    biasTable = table( ...
+        divisions, ...
+        nValues, ...
+        observedMean, ...
+        observedStd, ...
+        predictedMean, ...
+        repmat(referenceMean, numel(divisions), 1), ...
+        alphaEstimate, ...
+        percentBias, ...
+        'VariableNames', { ...
+        'scansPerGroup', ...
+        'nValues', ...
+        'observedMean', ...
+        'observedStd', ...
+        'predictedMean', ...
+        'referenceMean', ...
+        'alphaEstimate', ...
+        'percentBias'});
+
+    % ------------------------------------------------------------
+    % ANOVA table for overall division effect
+    % ------------------------------------------------------------
+    try
+        anovaTable = anova(mdl, 'summary');
+    catch
+        anovaTable = anova(mdl);
+    end
+
+    result = struct;
+    result.metabolite = metabName;
+    result.formula = formula;
+    result.referenceDivision = referenceDivision;
+    result.model = mdl;
+    result.coefficients = mdl.Coefficients;
+    result.anovaTable = anovaTable;
+    result.biasTable = biasTable;
+    result.data = Tm;
+end
+
+function PlotDivisionID_LMMBias(result, varargin)
+    % PlotDivisionID_LMMBias
+    %
+    % Plots bias from:
+    %
+    %   concentration ~ logScansPerGroup + (1|divisionID)
+    
+    p = inputParser;
+    p.addParameter('useDivisionOffset', true, @(x) islogical(x) && isscalar(x));
+    parse(p, varargin{:});
+    
+    useDivisionOffset = p.Results.useDivisionOffset;
+    
+    T = result.biasTable;
+    
+    x = 1:height(T);
+    xLabels = string(T.scansPerGroup);
+    
+    figure;
+    hold on;
+    
+    yline(0, '--', ...
+        'LineWidth', 1.2, ...
+        'DisplayName', 'No bias');
+    
+    observedBias = T.observedMean - T.observedMean(T.scansPerGroup == result.referenceDivision);
+    observedPercentBias = 100 * observedBias ./ T.observedMean(T.scansPerGroup == result.referenceDivision);
+    
+    plot(x, observedPercentBias, ':o', ...
+        'LineWidth', 1.5, ...
+        'MarkerSize', 6, ...
+        'DisplayName', 'Observed mean bias');
+    
+    if useDivisionOffset
+        plot(x, T.percentBiasWithDivisionOffset, '-o', ...
+            'LineWidth', 2, ...
+            'MarkerSize', 7, ...
+            'DisplayName', 'LMM bias with division offset');
+    else
+        plot(x, T.percentBiasFixed, '-o', ...
+            'LineWidth', 2, ...
+            'MarkerSize', 7, ...
+            'DisplayName', 'Fixed-effect trend bias');
+    end
+    
+    xticks(x);
+    xticklabels(xLabels);
+    
+    xlabel('Scans per group');
+    ylabel(sprintf('Percent bias relative to Division_%d', ...
+        result.referenceDivision));
+    
+    title(sprintf('%s: concentration ~ log(scansPerGroup) + (1|divisionID)', ...
+        result.metabolite), ...
+        'Interpreter', 'none');
+    
+    legend('Location', 'best', 'Interpreter', 'none');
+    grid on;
+    box on;
+    hold off;
 end
