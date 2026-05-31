@@ -1,7 +1,7 @@
 %% Project Configuration Parameters
 
 function cfg = ProjectConfig()
-    rootDir = "C:\Users\doronkatzir1\Desktop\Thesis_Lab";
+    rootDir = "C:\Users\User\Documents\Thesis_Lab";
     
     cfg.paths.rootDir = rootDir;
     cfg.paths.dataDir = fullfile(rootDir, "Data");
