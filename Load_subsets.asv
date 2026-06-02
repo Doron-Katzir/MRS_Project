@@ -48,79 +48,17 @@ for metab = sumMetabList
 end
 
 % Plot spectra
-PlotDivisionFittedSpectraStack(fitData, coordFiles, 6);
+PlotDivisionFittedSpectraStack(fitData, coordFiles, 1);
 
-%% Heteroscedastic fixed-effect division model
-% Mentor model:
-%
-%   X_ij = beta0 + alpha_i + epsilon_ij
-%   epsilon_ij ~ N(0, sigma_i^2)
-%
-% Here:
-%   X_ij      = one LCModel concentration value
-%   i         = division size
-%   j         = part inside that division
-%   beta0     = reference division mean, usually Division_36
-%   alpha_i   = fixed bias of division i relative to reference
-%   sigma_i^2 = variance inside division i
-
-referenceDivision = 36;
-chosenMetab = "NAA";
-
-modelTableSig = BuildConcentrationModelTable( ...
-    tablesByMetric.sig, ...
+% ANOVA test
+anovaSig = RunExploratoryDivisionAnova( ...
+    tablesByDivision, ...
     analysisMetabList, ...
-    'ignoreZeros', true);
+    'ignoreZeros', true, ...
+    'showPlots', false);
 
-resultNAA_hetero = FitDivisionHeteroscedasticFixedEffect( ...
-    modelTableSig, ...
-    chosenMetab, ...
-    'referenceDivision', referenceDivision);
-
-disp(resultNAA_hetero.biasTable)
-
-PlotDivisionHeteroscedasticBias(resultNAA_hetero);
-
-% Optional: run the same model for every metabolite.
-% Some metabolites may be missing from the reference division, especially when
-% ignoreZeros=true and LCModel returned 0 for that metabolite in Division_36.
-% Those metabolites cannot have beta0 defined relative to Division_36, so we skip them.
-heteroResultsSig = struct;
-skippedHeteroMetabs = strings(0, 1);
-skippedHeteroReasons = strings(0, 1);
-
-for i = 1:numel(analysisMetabList)
-
-    metabName = analysisMetabList(i);
-    fieldName = matlab.lang.makeValidName(metabName);
-
-    try
-        heteroResultsSig.(fieldName) = FitDivisionHeteroscedasticFixedEffect( ...
-            modelTableSig, ...
-            metabName, ...
-            'referenceDivision', referenceDivision);
-
-    catch ME
-        if contains(string(ME.message), "Reference division") || ...
-                contains(string(ME.message), "was not found in modelTable")
-
-            warning('Skipping metabolite "%s": %s', metabName, ME.message);
-            skippedHeteroMetabs(end+1, 1) = metabName; %#ok<SAGROW>
-            skippedHeteroReasons(end+1, 1) = string(ME.message); %#ok<SAGROW>
-
-        else
-            rethrow(ME);
-        end
-    end
-end
-
-skippedHeteroTable = table(skippedHeteroMetabs, skippedHeteroReasons, ...
-    'VariableNames', {'metabolite', 'reason'});
-
-if ~isempty(skippedHeteroTable)
-    disp('Skipped metabolites in heteroscedastic fixed-effect model:')
-    disp(skippedHeteroTable)
-end
+anovaSig = sortrows(anovaSig, 'pValue');
+disp(anovaSig)
 
 %% Functions
 
@@ -1089,291 +1027,166 @@ function PlotDivisionFittedSpectraStack(fitData, coordFiles, divisionNumber, var
     hold off;
 end
 
-function modelTable = BuildConcentrationModelTable(tablesByDivision, metabList, varargin)
-% BuildConcentrationModelTable
-%
-% Converts tablesByDivision into long format.
-%
-% Each row is one LCModel concentration value, X_ij:
-%
-%   metabolite | division | divisionID | part | concentration
-%
-% This table is the input for:
-%
-%   X_ij = beta0 + alpha_i + epsilon_ij
-
+function anovaData = BuildDivisionLongTable(tablesByDivisionInput, metabList, varargin)
+    % BuildDivisionLongTable
+    %
+    % Converts tablesByDivision into long-format data:
+    %
+    %   patientIndex | metabolite | division | part | value
+    %
+    % Supports:
+    %   single patient:
+    %       BuildDivisionLongTable(tablesByDivision, metabList)
+    %
+    %   multiple patients:
+    %       BuildDivisionLongTable({tablesP1, tablesP2}, metabList)
+    
     p = inputParser;
     p.addParameter('ignoreZeros', true, @(x) islogical(x) && isscalar(x));
     parse(p, varargin{:});
-
+    
     ignoreZeros = p.Results.ignoreZeros;
     metabList = string(metabList(:));
-
-    divisionFields = string(fieldnames(tablesByDivision));
-
+    
+    % Convert input to cell array of patients
+    if iscell(tablesByDivisionInput)
+        patientTables = tablesByDivisionInput(:);
+    elseif isstruct(tablesByDivisionInput) && numel(tablesByDivisionInput) > 1
+        patientTables = num2cell(tablesByDivisionInput);
+    elseif isstruct(tablesByDivisionInput)
+        patientTables = {tablesByDivisionInput};
+    else
+        error('Input must be a tablesByDivision struct, struct array, or cell array of structs.');
+    end
+    
     rows = {};
-
-    for d = 1:numel(divisionFields)
-
-        curField = divisionFields(d);
-        curDivision = ParseDivisionNumber(curField);
-
-        if isnan(curDivision)
-            continue;
-        end
-
-        curTable = tablesByDivision.(curField);
-
-        for m = 1:numel(metabList)
-
-            metabName = metabList(m);
-            values = ExtractMetabVectorFromTable(curTable, metabName);
-
-            if isempty(values)
+    
+    for pIdx = 1:numel(patientTables)
+    
+        curStruct = patientTables{pIdx};
+        divisionFields = string(fieldnames(curStruct));
+    
+        for d = 1:numel(divisionFields)
+    
+            curField = divisionFields(d);
+            curDivision = ParseDivisionNumber(curField);
+    
+            if isnan(curDivision)
                 continue;
             end
-
-            values = double(values(:));
-
-            for partIdx = 1:numel(values)
-
-                curValue = values(partIdx);
-
-                if ignoreZeros && curValue == 0
-                    curValue = NaN;
-                end
-
-                if isnan(curValue)
+    
+            curTable = curStruct.(curField);
+    
+            for m = 1:numel(metabList)
+    
+                metabName = metabList(m);
+    
+                y = ExtractMetabVectorFromTable(curTable, metabName);
+    
+                if isempty(y)
                     continue;
                 end
-
-                rows(end+1, :) = { ...
-                    metabName, ...
-                    curDivision, ...
-                    "Division_" + string(curDivision), ...
-                    partIdx, ...
-                    curValue}; %#ok<AGROW>
+    
+                y = double(y(:));
+    
+                for partIdx = 1:numel(y)
+    
+                    curValue = y(partIdx);
+    
+                    if ignoreZeros && curValue == 0
+                        curValue = NaN;
+                    end
+    
+                    rows(end+1, :) = { ...
+                        pIdx, ...
+                        metabName, ...
+                        curDivision, ...
+                        partIdx, ...
+                        curValue}; %#ok<AGROW>
+                end
             end
         end
     end
-
-    modelTable = cell2table(rows, ...
+    
+    anovaData = cell2table(rows, ...
         'VariableNames', { ...
+        'patientIndex', ...
         'metabolite', ...
         'division', ...
-        'divisionID', ...
         'part', ...
-        'concentration'});
-
-    modelTable.metabolite = string(modelTable.metabolite);
-    modelTable.divisionID = categorical(string(modelTable.divisionID));
+        'value'});
+    
+    anovaData.metabolite = string(anovaData.metabolite);
 end
 
-function result = FitDivisionHeteroscedasticFixedEffect(modelTable, metabName, varargin)
-% FitDivisionHeteroscedasticFixedEffect
-%
-% Implements your mentor's model:
-%
-%   X_ij = beta0 + alpha_i + epsilon_ij
-%
-% with group-specific residual variance:
-%
-%   epsilon_ij ~ N(0, sigma_i^2)
-%
-% where:
-%   i = division
-%   j = part within division
-%
-% beta0 is the reference division mean.
-% alpha_i is the bias of division i relative to the reference.
-% sigma_i^2 is estimated separately for each division.
-
-    p = inputParser;
-    p.addParameter('referenceDivision', 36, @(x) isnumeric(x) && isscalar(x));
-    parse(p, varargin{:});
-
-    referenceDivision = p.Results.referenceDivision;
-    metabName = string(metabName);
-
-    % Keep only this metabolite.
-    Tm = modelTable(strcmpi(modelTable.metabolite, metabName), :);
-
-    if isempty(Tm)
-        error('Metabolite "%s" was not found in modelTable.', metabName);
-    end
-
-    Tm = sortrows(Tm, {'division', 'part'});
-
-    divisions = unique(Tm.division);
-    divisions = sort(divisions(:));
-
-    if ~ismember(referenceDivision, divisions)
-        error('Reference division %d was not found for metabolite "%s".', ...
-            referenceDivision, metabName);
-    end
-
-    nDivisions = numel(divisions);
-
-    nValues = nan(nDivisions, 1);
-    meanValue = nan(nDivisions, 1);
-    stdValue = nan(nDivisions, 1);
-    varValue = nan(nDivisions, 1);
-    semValue = nan(nDivisions, 1);
-
-    % ------------------------------------------------------------
-    % Estimate one mean and one variance per division.
-    % ------------------------------------------------------------
-    for i = 1:nDivisions
-
-        curDivision = divisions(i);
-
-        curValues = Tm.concentration(Tm.division == curDivision);
-        curValues = curValues(~isnan(curValues));
-
-        nValues(i) = numel(curValues);
-
-        if nValues(i) >= 1
-            meanValue(i) = mean(curValues);
-        end
-
-        if nValues(i) >= 2
-            stdValue(i) = std(curValues, 0);
-            varValue(i) = var(curValues, 0);
-            semValue(i) = stdValue(i) / sqrt(nValues(i));
-        else
-            % A division with one value has a mean but no estimable variance.
-            stdValue(i) = NaN;
-            varValue(i) = NaN;
-            semValue(i) = NaN;
-        end
-    end
-
-    % ------------------------------------------------------------
-    % beta0 and alpha_i.
-    % ------------------------------------------------------------
-    refIdx = divisions == referenceDivision;
-
-    beta0 = meanValue(refIdx);
-
-    alphaEstimate = meanValue - beta0;
-    percentBias = 100 * alphaEstimate ./ beta0;
-
-    % ------------------------------------------------------------
-    % Optional Welch/Satterthwaite uncertainty for alpha_i.
+function anovaResults = RunExploratoryDivisionAnova(tablesByDivision, metabList, varargin)
+    % RunExploratoryDivisionAnova
     %
-    % This requires variance estimates in both groups.
-    % If referenceDivision = 36, n = 1, so pAlpha will usually be NaN.
-    % That is expected and statistically honest.
-    % ------------------------------------------------------------
-    refVar = varValue(refIdx);
-    refN = nValues(refIdx);
-
-    seAlpha = nan(nDivisions, 1);
-    dfAlpha = nan(nDivisions, 1);
-    tAlpha = nan(nDivisions, 1);
-    pAlpha = nan(nDivisions, 1);
-
-    for i = 1:nDivisions
-
-        if divisions(i) == referenceDivision
-            seAlpha(i) = 0;
+    % Exploratory one-way ANOVA:
+    %   value ~ division
+    %
+    % This treats division parts as observations.
+    % For one subject this is exploratory, not definitive inference.
+    
+    p = inputParser;
+    p.addParameter('ignoreZeros', true, @(x) islogical(x) && isscalar(x));
+    p.addParameter('showPlots', false, @(x) islogical(x) && isscalar(x));
+    parse(p, varargin{:});
+    
+    ignoreZeros = p.Results.ignoreZeros;
+    showPlots = p.Results.showPlots;
+    
+    metabList = string(metabList(:));
+    
+    anovaData = BuildDivisionLongTable(tablesByDivision, metabList, ...
+        'ignoreZeros', ignoreZeros);
+    
+    rows = {};
+    
+    for m = 1:numel(metabList)
+    
+        metabName = metabList(m);
+    
+        Tm = anovaData(anovaData.metabolite == metabName, :);
+        Tm = Tm(~isnan(Tm.value), :);
+    
+        if height(Tm) < 2 || numel(unique(Tm.division)) < 2
+            rows(end+1, :) = {metabName, NaN, NaN, NaN, NaN}; %#ok<AGROW>
             continue;
         end
-
-        curVar = varValue(i);
-        curN = nValues(i);
-
-        if curN >= 2 && refN >= 2 && ~isnan(curVar) && ~isnan(refVar)
-
-            a = curVar / curN;
-            b = refVar / refN;
-
-            seAlpha(i) = sqrt(a + b);
-
-            dfAlpha(i) = (a + b)^2 / ...
-                (a^2 / (curN - 1) + b^2 / (refN - 1));
-
-            tAlpha(i) = alphaEstimate(i) / seAlpha(i);
-            pAlpha(i) = 2 * tcdf(-abs(tAlpha(i)), dfAlpha(i));
+    
+        if showPlots
+            [pVal, tbl, stats] = anova1(Tm.value, categorical(Tm.division));
+        else
+            [pVal, tbl, stats] = anova1(Tm.value, categorical(Tm.division), 'off');
         end
+    
+        % Extract F statistic if available
+        try
+            F = tbl{2, 5};
+            dfBetween = tbl{2, 3};
+            dfWithin = tbl{3, 3};
+        catch
+            F = NaN;
+            dfBetween = NaN;
+            dfWithin = NaN;
+        end
+    
+        rows(end+1, :) = { ...
+            metabName, ...
+            pVal, ...
+            F, ...
+            dfBetween, ...
+            dfWithin}; %#ok<AGROW>
     end
-
-    % ------------------------------------------------------------
-    % Output table.
-    % ------------------------------------------------------------
-    biasTable = table( ...
-        divisions, ...
-        nValues, ...
-        meanValue, ...
-        stdValue, ...
-        varValue, ...
-        semValue, ...
-        repmat(beta0, nDivisions, 1), ...
-        alphaEstimate, ...
-        percentBias, ...
-        seAlpha, ...
-        dfAlpha, ...
-        tAlpha, ...
-        pAlpha, ...
+    
+    anovaResults = cell2table(rows, ...
         'VariableNames', { ...
-        'division', ...
-        'nValues', ...
-        'meanValue', ...
-        'stdValue', ...
-        'varValue', ...
-        'semValue', ...
-        'beta0ReferenceMean', ...
-        'alphaEstimate', ...
-        'percentBias', ...
-        'seAlpha', ...
-        'dfAlpha', ...
-        'tAlpha', ...
-        'pAlpha'});
-
-    result = struct;
-    result.metabolite = metabName;
-    result.modelText = "X_ij = beta0 + alpha_i + epsilon_ij, epsilon_ij ~ N(0, sigma_i^2)";
-    result.referenceDivision = referenceDivision;
-    result.beta0 = beta0;
-    result.biasTable = biasTable;
-    result.data = Tm;
-end
-
-function PlotDivisionHeteroscedasticBias(result)
-% PlotDivisionHeteroscedasticBias
-%
-% Plots alpha_i as percent bias relative to the reference division.
-
-    T = result.biasTable;
-
-    x = 1:height(T);
-    xLabels = string(T.division);
-
-    figure;
-    hold on;
-
-    yline(0, '--', ...
-        'LineWidth', 1.2, ...
-        'DisplayName', 'Reference / no bias');
-
-    plot(x, T.percentBias, '-o', ...
-        'LineWidth', 2, ...
-        'MarkerSize', 7, ...
-        'DisplayName', 'Estimated fixed-effect bias');
-
-    xticks(x);
-    xticklabels(xLabels);
-
-    xlabel('Scans per group / division size');
-    ylabel(sprintf('Percent bias relative to Division_%d', ...
-        result.referenceDivision));
-
-    title(sprintf('%s division fixed-effect bias', result.metabolite), ...
-        'Interpreter', 'none');
-
-    legend('Location', 'best', 'Interpreter', 'none');
-    grid on;
-    box on;
-
-    hold off;
+        'metabolite', ...
+        'pValue', ...
+        'F', ...
+        'dfBetween', ...
+        'dfWithin'});
+    
+    anovaResults.metabolite = string(anovaResults.metabolite);
 end

@@ -51,7 +51,7 @@ end
 PlotDivisionFittedSpectraStack(fitData, coordFiles, 6);
 
 %% Heteroscedastic fixed-effect division model
-% Mentor model:
+% Model:
 %
 %   X_ij = beta0 + alpha_i + epsilon_ij
 %   epsilon_ij ~ N(0, sigma_i^2)
@@ -72,16 +72,16 @@ modelTableSig = BuildConcentrationModelTable( ...
     analysisMetabList, ...
     'ignoreZeros', true);
 
-resultNAA_hetero = FitDivisionHeteroscedasticFixedEffect( ...
+result_hetero = FitDivisionHeteroscedasticFixedEffect( ...
     modelTableSig, ...
     chosenMetab, ...
     'referenceDivision', referenceDivision);
 
-disp(resultNAA_hetero.biasTable)
+disp(result_hetero.biasTable)
 
-PlotDivisionHeteroscedasticBias(resultNAA_hetero);
+PlotDivisionHeteroscedasticBias(result_hetero);
 
-% Optional: run the same model for every metabolite.
+% Run the same model for every metabolite.
 % Some metabolites may be missing from the reference division, especially when
 % ignoreZeros=true and LCModel returned 0 for that metabolite in Division_36.
 % Those metabolites cannot have beta0 defined relative to Division_36, so we skip them.
@@ -1172,7 +1172,7 @@ end
 function result = FitDivisionHeteroscedasticFixedEffect(modelTable, metabName, varargin)
 % FitDivisionHeteroscedasticFixedEffect
 %
-% Implements your mentor's model:
+% Implements heteroscedastic model:
 %
 %   X_ij = beta0 + alpha_i + epsilon_ij
 %

@@ -2,9 +2,7 @@
 
 clear;
 cfg = ProjectConfig();
-img = VDIIO.LoadTwix(['C:\Users\doronkatzir1\Desktop\Thesis_Lab\Data\' ...
-    'meas_MID00090_FID32072_eja_svs_slaser_TE_80_r0.dat'], ...
-    'isICEChop', true);
+img = VDIIO.LoadTwix(cfg.files.twixFile, 'isICEChop', true);
 
 %% Preprocessing
 
@@ -126,12 +124,12 @@ end
 %% Run main
 
 % Create and export basis function
-[basisFunc, TE] = createBasis(img, basisMetabList);
+[basisFunc, TE] = createBasis(img, cfg.metabolites.basis);
 basisName = "For_division_" + erase(img.name, " ") + ".basis";
 basisFunc.ExportBasisToLCModel(basisName, 'TE', TE);
 
 % Splice data to subsets
-for size = setSizes
+for size = cfg.subsets.setSizes
     splicedImg = FitSubset(img, size, basisName);
 end
 

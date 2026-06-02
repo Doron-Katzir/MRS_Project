@@ -1,0 +1,28 @@
+1. Start with 36 temporal MRS sets.
+
+2. Choose a division size.
+   Example: 6 scans per group.
+
+3. Average the data into groups.
+   Division_6 gives 6 averaged spectra.
+
+4. Fit each averaged spectrum using LCModel.
+
+5. Extract metabolite concentrations from LCModel.
+
+6. For each metabolite, organize concentrations by division.
+
+7. For each division, compute:
+      mean concentration
+      variance
+      number of values
+
+8. Choose a reference division, usually Division_36.
+
+9. Compute bias:
+      alpha_i = mean(Division_i) - mean(Division_36)
+
+10. Convert bias to percent:
+      percentBias = 100 * alpha_i / mean(Division_36)
+
+11. Use Welch ANOVA as an unequal-variance test of whether division means differ.
