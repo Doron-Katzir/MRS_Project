@@ -78,19 +78,4 @@ function cfg = ProjectConfig()
 
     cfg.lcmodel.valueColumn = "sig";
     cfg.lcmodel.outputNamePattern = "Division_%d_part_%d.basis";
-
-    %% Available options / documentation
-
-    cfg.options.inputModes = ["directory", "singleFile"];
-    cfg.options.loadModes = ["allSubfolders", "singleSubfolder"];
-    cfg.options.patientIDModes = ["sequential", "filename", "midfid"];
-
-    cfg.options.defaultInputMode = "directory";
-    cfg.options.defaultLoadMode = "allSubfolders";
-
-    cfg.options.description.inputMode = ...
-        "directory = find all relevant .dat files; singleFile = use one file";
-
-    cfg.options.description.loadMode = ...
-        "allSubfolders = load all patient folders; singleSubfolder = load one patient folder";
 end
