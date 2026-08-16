@@ -49,7 +49,7 @@ outputs = Load_subsets_multi_patient_input(cfg);
 %% Check metab covariance
 
 cfg.covariance.loadMode = "allSubfolders";
-covOutputs = MetabCovarianceByPatient_updated_abs(cfg);
+covOutputs = MetabCovarianceByPatient(cfg);
 
 
 
@@ -97,7 +97,7 @@ cfg.degraaf.invalidCRLBValue = 100;
 
 %% Run
 
-deGraafOutputs = DeGraafAmplitudeCorrelationByPatient_updated_abs(cfg);
+deGraafOutputs = DeGraafAmplitudeCorrelationByPatient(cfg);
 % deGraafOutputs.patientResultsByID.P11.meanAmplitudeCovTable
 
 
