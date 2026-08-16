@@ -177,6 +177,15 @@ function outputs = DeGraafAmplitudeCorrelationByPatient(cfg, varargin)
             partSD, ...
             opts.invalidCRLBValue);
 
+        crlbLongTable = BuildCRLBLongTableFromPartArrays( ...
+            patientID, ...
+            opts.division, ...
+            metabList, ...
+            partInfo, ...
+            partConc, ...
+            partCRLB, ...
+            partSD);
+
         meanAmplitudeCorrTable = MatrixToMetabTable(meanAmplitudeCorrMatrix, metabList);
         meanAbsAmplitudeCorrTable = MatrixToMetabTable(meanAbsAmplitudeCorrMatrix, metabList);
         meanAmplitudeCovTable = MatrixToMetabTable(meanAmplitudeCovMatrix, metabList);
@@ -214,6 +223,7 @@ function outputs = DeGraafAmplitudeCorrelationByPatient(cfg, varargin)
         patientResults(pIdx).nValidPartAbsCorrTable = nValidPartAbsCorrTable;
         patientResults(pIdx).nValidPartCovTable = nValidPartCovTable;
         patientResults(pIdx).crlbSummaryTable = crlbSummaryTable;
+        patientResults(pIdx).crlbLongTable = crlbLongTable;
 
         safeField = matlab.lang.makeValidName(char(patientID));
         patientResultsByID.(safeField) = patientResults(pIdx);
@@ -975,6 +985,43 @@ function summaryTable = SummarizePartCRLBs(metabList, partConc, partCRLB, partSD
         'medianCRLB', ...
         'stdCRLB', ...
         'meanSD'});
+end
+
+
+function crlbLongTable = BuildCRLBLongTableFromPartArrays( ...
+    patientID, divisionNumber, metabList, partInfo, partConc, partCRLB, partSD)
+
+    patientID = string(patientID);
+    metabList = string(metabList(:));
+
+    nParts = size(partCRLB, 1);
+    nMetabs = numel(metabList);
+
+    crlbLongTable = table();
+
+    for partIdx = 1:nParts
+
+        if istable(partInfo) && any(strcmp(partInfo.Properties.VariableNames, "part"))
+            partNumber = partInfo.part(partIdx);
+        else
+            partNumber = partIdx;
+        end
+
+        for metabIdx = 1:nMetabs
+
+            newRow = table();
+
+            newRow.patientID = patientID;
+            newRow.division = divisionNumber;
+            newRow.part = partNumber;
+            newRow.metabolite = metabList(metabIdx);
+            newRow.concentration = partConc(partIdx, metabIdx);
+            newRow.CRLB = partCRLB(partIdx, metabIdx);
+            newRow.sdAbsolute = partSD(partIdx, metabIdx);
+
+            crlbLongTable = [crlbLongTable; newRow]; %#ok<AGROW>
+        end
+    end
 end
 
 
