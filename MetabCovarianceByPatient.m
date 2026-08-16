@@ -45,6 +45,7 @@ function outputs = MetabCovarianceByPatient(cfg, varargin)
 
     covStack = nan(nMetabs, nMetabs, nPatients);
     corrStack = nan(nMetabs, nMetabs, nPatients);
+    absCorrStack = nan(nMetabs, nMetabs, nPatients);
     nPairStack = nan(nMetabs, nMetabs, nPatients);
 
     fprintf('\nMetabolite covariance/correlation analysis\n');
@@ -86,8 +87,11 @@ function outputs = MetabCovarianceByPatient(cfg, varargin)
             dataMatrix, ...
             opts.minValidPairs);
 
+        absCorrMatrix = abs(corrMatrix);
+
         covTable = MatrixToMetabTable(covMatrix, metabList);
         corrTable = MatrixToMetabTable(corrMatrix, metabList);
+        absCorrTable = MatrixToMetabTable(absCorrMatrix, metabList);
         nPairTable = MatrixToMetabTable(nPairMatrix, metabList);
 
         patientResults(pIdx).patientID = patientID;
@@ -106,10 +110,12 @@ function outputs = MetabCovarianceByPatient(cfg, varargin)
 
         patientResults(pIdx).covMatrix = covMatrix;
         patientResults(pIdx).corrMatrix = corrMatrix;
+        patientResults(pIdx).absCorrMatrix = absCorrMatrix;
         patientResults(pIdx).nPairMatrix = nPairMatrix;
 
         patientResults(pIdx).covTable = covTable;
         patientResults(pIdx).corrTable = corrTable;
+        patientResults(pIdx).absCorrTable = absCorrTable;
         patientResults(pIdx).nPairTable = nPairTable;
 
         safeField = matlab.lang.makeValidName(char(patientID));
@@ -117,14 +123,20 @@ function outputs = MetabCovarianceByPatient(cfg, varargin)
 
         covStack(:, :, pIdx) = covMatrix;
         corrStack(:, :, pIdx) = corrMatrix;
+        absCorrStack(:, :, pIdx) = absCorrMatrix;
         nPairStack(:, :, pIdx) = nPairMatrix;
     end
 
     meanCovMatrix = mean(covStack, 3, 'omitnan');
     meanCorrMatrix = AverageCorrelationMatrices(corrStack);
 
+    % This is mean(abs(patient correlations)), not abs(mean correlation).
+    % It captures correlation magnitude even when signs differ between patients.
+    meanAbsCorrMatrix = mean(absCorrStack, 3, 'omitnan');
+
     nPatientsCovMatrix = sum(~isnan(covStack), 3);
     nPatientsCorrMatrix = sum(~isnan(corrStack), 3);
+    nPatientsAbsCorrMatrix = sum(~isnan(absCorrStack), 3);
 
     outputs = struct;
 
@@ -137,19 +149,24 @@ function outputs = MetabCovarianceByPatient(cfg, varargin)
 
     outputs.group.covStack = covStack;
     outputs.group.corrStack = corrStack;
+    outputs.group.absCorrStack = absCorrStack;
     outputs.group.nPairStack = nPairStack;
 
     outputs.group.meanCovMatrix = meanCovMatrix;
     outputs.group.meanCorrMatrix = meanCorrMatrix;
+    outputs.group.meanAbsCorrMatrix = meanAbsCorrMatrix;
 
     outputs.group.nPatientsCovMatrix = nPatientsCovMatrix;
     outputs.group.nPatientsCorrMatrix = nPatientsCorrMatrix;
+    outputs.group.nPatientsAbsCorrMatrix = nPatientsAbsCorrMatrix;
 
     outputs.group.meanCovTable = MatrixToMetabTable(meanCovMatrix, metabList);
     outputs.group.meanCorrTable = MatrixToMetabTable(meanCorrMatrix, metabList);
+    outputs.group.meanAbsCorrTable = MatrixToMetabTable(meanAbsCorrMatrix, metabList);
 
     outputs.group.nPatientsCovTable = MatrixToMetabTable(nPatientsCovMatrix, metabList);
     outputs.group.nPatientsCorrTable = MatrixToMetabTable(nPatientsCorrMatrix, metabList);
+    outputs.group.nPatientsAbsCorrTable = MatrixToMetabTable(nPatientsAbsCorrMatrix, metabList);
 end
 
 
