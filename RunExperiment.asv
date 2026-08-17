@@ -226,7 +226,7 @@ testCfg.minValidParts = 8;
 testCfg.minPatientsForGroupTest = 3;
 testCfg.nGroupPermutations = 5000;
 testCfg.randomSeed = 1;
-testCfg.crlbThreshold = 100;
+testCfg.crlbThreshold = 998;
 testCfg.requiredGoodFraction = 0.90;
 
 metabs = string(covOutputs.group.meanCorrTable.Properties.RowNames);
@@ -534,10 +534,6 @@ pairCfg.metabolites = "all";
 % Exclude summed metabolites.
 pairCfg.excludeSumMetabolites = false;
 pairCfg.sumMetabolites = ["GPC+PCh", "NAA+NAAG", "Cr+PCr", "Glu+Gln"];
-
-% For unfiltered diagnostic run:
-% do not remove metabolites based on CRLB majority rule.
-pairCfg.useCRLBMajorityFilter = false;
 
 % Pairwise valid repeated parts.
 pairCfg.ignoreZeros = true;
