@@ -7,6 +7,12 @@ function cfg = ProjectConfig()
     cfg.paths.dataDir = fullfile(rootDir, "Data");
     cfg.paths.coordDir = fullfile(rootDir, "LCMFit");
 
+    % Generated, rebuildable cache for parsed LCModel .coord files.
+    % This directory is outside both the source repository and LCMFit data.
+    cfg.cache.coord.enabled = true;
+    cfg.cache.coord.forceRefresh = false;
+    cfg.cache.coord.directory = fullfile(rootDir, "GeneratedCache", "CoordParsing");
+
     % ---------------------------------------------------------------------
     % Input selection
     % ---------------------------------------------------------------------

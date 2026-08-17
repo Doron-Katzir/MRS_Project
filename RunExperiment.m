@@ -43,7 +43,7 @@ cfg.load.mode = "allSubfolders";
 cfg.load.coordDir = cfg.paths.coordDir;
 
 %% Check bias
-outputs = Load_subsets_multi_patient_input(cfg);
+%outputs = Load_subsets_multi_patient_input(cfg);
 
 
 %% Check metab covariance
