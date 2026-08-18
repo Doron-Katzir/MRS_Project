@@ -33,6 +33,7 @@ function outputs = MetabCovarianceByPatient(cfg, varargin)
     end
 
     opts = ParseCovarianceOptionsFromConfig(cfg, varargin{:});
+    cacheOptions = CoordCacheOptions(cfg, varargin{:});
 
     patients = BuildPatientFolderTableForCovariance(opts);
 
@@ -47,6 +48,9 @@ function outputs = MetabCovarianceByPatient(cfg, varargin)
     corrStack = nan(nMetabs, nMetabs, nPatients);
     absCorrStack = nan(nMetabs, nMetabs, nPatients);
     nPairStack = nan(nMetabs, nMetabs, nPatients);
+
+    analysisTimer = tic;
+    cacheStats = InitializeCoordCacheStats(cacheOptions);
 
     fprintf('\nMetabolite covariance/correlation analysis\n');
     fprintf('Load mode: %s\n', opts.loadMode);
@@ -68,9 +72,20 @@ function outputs = MetabCovarianceByPatient(cfg, varargin)
             filePrefix = "";
         end
 
-        [quant, fitData, coordFiles, badCoordTable] = SafeReadCoordFiles( ...
+        coordStageTimer = tic;
+        [quant, fitData, coordFiles, badCoordTable, cacheEvent] = ReadPatientCoordCached( ...
             coordDir, ...
+            patientID, ...
+            cacheOptions, ...
             'filePrefix', filePrefix);
+        cacheEvent.coordStageSeconds = toc(coordStageTimer);
+        cacheStats = UpdateCoordCacheStats(cacheStats, cacheEvent);
+
+        fprintf('Coord cache %s: %s', patientID, cacheEvent.status);
+        if strlength(cacheEvent.reason) > 0
+            fprintf(' - %s', cacheEvent.reason);
+        end
+        fprintf('\n');
 
         coordTable = quant.metabTable;
 
@@ -167,6 +182,8 @@ function outputs = MetabCovarianceByPatient(cfg, varargin)
     outputs.group.nPatientsCovTable = MatrixToMetabTable(nPatientsCovMatrix, metabList);
     outputs.group.nPatientsCorrTable = MatrixToMetabTable(nPatientsCorrMatrix, metabList);
     outputs.group.nPatientsAbsCorrTable = MatrixToMetabTable(nPatientsAbsCorrMatrix, metabList);
+
+    PrintCoordCacheSummary(cacheStats, toc(analysisTimer));
 end
 
 
@@ -308,6 +325,12 @@ function opts = ParseCovarianceOptionsFromConfig(cfg, varargin)
         @(x) islogical(x) && isscalar(x));
 
     p.addParameter('metabList', opts.metabList, @(x) ischar(x) || isstring(x) || iscellstr(x));
+
+    % Accepted here so the same name-value cache overrides can be passed to
+    % both coord consumers; CoordCacheOptions performs their validation.
+    p.addParameter('coordCacheEnabled', true, @(x) islogical(x) && isscalar(x));
+    p.addParameter('coordCacheForceRefresh', false, @(x) islogical(x) && isscalar(x));
+    p.addParameter('coordCacheDirectory', "", @(x) ischar(x) || isstring(x));
 
     parse(p, varargin{:});
 
@@ -483,100 +506,70 @@ function patients = BuildPatientFolderTableForCovariance(opts)
 end
 
 
-function [quant, fitData, coordFiles, badCoordTable] = SafeReadCoordFiles(coordDir, varargin)
+function stats = InitializeCoordCacheStats(cacheOptions)
+    stats = struct();
+    stats.enabled = cacheOptions.enabled;
+    stats.hits = 0;
+    stats.missing = 0;
+    stats.invalidated = 0;
+    stats.corrupt = 0;
+    stats.forced = 0;
+    stats.disabled = 0;
+    stats.writeFailures = 0;
+    stats.validationSeconds = 0;
+    stats.loadSeconds = 0;
+    stats.parseSeconds = 0;
+    stats.writeSeconds = 0;
+    stats.coordStageSeconds = 0;
+    stats.parserCallCount = 0;
+end
 
-    p = inputParser;
-    p.addParameter('filePrefix', "", @(x) ischar(x) || isstring(x));
-    parse(p, varargin{:});
 
-    filePrefix = string(p.Results.filePrefix);
+function stats = UpdateCoordCacheStats(stats, event)
+    switch event.category
+        case "hit"
+            stats.hits = stats.hits + 1;
+        case "missing"
+            stats.missing = stats.missing + 1;
+        case "invalidated"
+            stats.invalidated = stats.invalidated + 1;
+        case "corrupt"
+            stats.corrupt = stats.corrupt + 1;
+        case "forced"
+            stats.forced = stats.forced + 1;
+        case "disabled"
+            stats.disabled = stats.disabled + 1;
+    end
 
-    if strlength(filePrefix) > 0
-        searchPattern = filePrefix + "*.coord";
+    if event.didAttemptWrite && ~event.writeSucceeded
+        stats.writeFailures = stats.writeFailures + 1;
+    end
+
+    stats.validationSeconds = stats.validationSeconds + event.validationSeconds;
+    stats.loadSeconds = stats.loadSeconds + event.loadSeconds;
+    stats.parseSeconds = stats.parseSeconds + event.parseSeconds;
+    stats.writeSeconds = stats.writeSeconds + event.writeSeconds;
+    stats.coordStageSeconds = stats.coordStageSeconds + event.coordStageSeconds;
+    stats.parserCallCount = stats.parserCallCount + event.parserCallCount;
+end
+
+
+function PrintCoordCacheSummary(stats, totalSeconds)
+    if stats.enabled
+        fprintf(['\nCoord cache: %d hits, %d misses, %d invalidated, ', ...
+            '%d corrupt, %d forced refresh, %d write failures.\n'], ...
+            stats.hits, stats.missing, stats.invalidated, stats.corrupt, ...
+            stats.forced, stats.writeFailures);
     else
-        searchPattern = "*.coord";
+        fprintf('\nCoord cache: disabled; %d patient(s) parsed normally.\n', stats.disabled);
     end
 
-    coordInfo = dir(fullfile(coordDir, searchPattern));
-
-    if isempty(coordInfo)
-        error('No .coord files found in %s with pattern %s.', coordDir, searchPattern);
-    end
-
-    fileNames = string({coordInfo.name});
-    [~, order] = sort(fileNames);
-    coordInfo = coordInfo(order);
-    fileNames = fileNames(order);
-
-    expectedFile = false(numel(fileNames), 1);
-
-    for k = 1:numel(fileNames)
-        expectedFile(k) = ~isempty(regexp(fileNames(k), ...
-            '(^|_)Division_\d+_(?:part_)?\d+\.basis\.coord$', ...
-            'once'));
-    end
-
-    if any(~expectedFile)
-        warning('Skipping unexpected .coord files in %s:', coordDir);
-        disp(fileNames(~expectedFile)')
-    end
-
-    coordInfo = coordInfo(expectedFile);
-
-    if isempty(coordInfo)
-        error('No expected Division_*.basis.coord files found in: %s', coordDir);
-    end
-
-    coordFiles = strings(numel(coordInfo), 1);
-
-    for k = 1:numel(coordInfo)
-        coordFiles(k) = fullfile(coordInfo(k).folder, coordInfo(k).name);
-    end
-
-    badCoordTable = table(strings(0, 1), strings(0, 1), ...
-        'VariableNames', {'coordFile', 'errorMessage'});
-
-    try
-        [quant, fitData] = VDIIO.ReadLCMCoord(coordFiles);
-        return;
-
-    catch ME
-        warning('Batch read failed. Checking .coord files one by one...');
-        warning('%s', ME.message);
-    end
-
-    isGood = true(numel(coordFiles), 1);
-    errorMessages = strings(numel(coordFiles), 1);
-
-    for k = 1:numel(coordFiles)
-
-        try
-            VDIIO.ReadLCMCoord(coordFiles(k));
-
-        catch ME
-            isGood(k) = false;
-            errorMessages(k) = string(ME.message);
-
-            fprintf('\nBad .coord file found:\n%s\n', coordFiles(k));
-            fprintf('Error:\n%s\n\n', ME.message);
-        end
-    end
-
-    badCoordTable = table( ...
-        coordFiles(~isGood), ...
-        errorMessages(~isGood), ...
-        'VariableNames', {'coordFile', 'errorMessage'});
-
-    if all(~isGood)
-        error('All .coord files failed to read in: %s', coordDir);
-    end
-
-    coordFiles = coordFiles(isGood);
-
-    warning('Reading only %d good .coord files. Skipped %d bad file(s).', ...
-        numel(coordFiles), height(badCoordTable));
-
-    [quant, fitData] = VDIIO.ReadLCMCoord(coordFiles);
+    downstreamSeconds = max(totalSeconds - stats.coordStageSeconds, 0);
+    fprintf(['Coord timing (seconds): validation %.3f, cache load %.3f, ', ...
+        'parse %.3f, cache write %.3f, downstream %.3f, total %.3f.\n'], ...
+        stats.validationSeconds, stats.loadSeconds, stats.parseSeconds, ...
+        stats.writeSeconds, downstreamSeconds, totalSeconds);
+    fprintf('VDIIO.ReadLCMCoord calls: %d.\n', stats.parserCallCount);
 end
 
 

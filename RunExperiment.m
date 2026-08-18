@@ -13,10 +13,10 @@ cfg.paths.coordDir = fullfile(cfg.paths.rootDir, "LCMFit");
 %% Splice data and save coord files
 %% Splice only one file
 
-% cfg.input.mode = "singleFile";
-% cfg.input.singlePatientID = "P11";
-% cfg.input.singleFileName = "meas_MID00090_FID32072_eja_svs_slaser_TE_80_r0.dat";
-% cfg.input.singleFile = fullfile(cfg.paths.dataDir, cfg.input.singleFileName);
+cfg.input.mode = "singleFile";
+cfg.input.singlePatientID = "P01";
+cfg.input.singleFileName = "meas_MID00020_FID54986_eja_svs_slaser_TE_80_1_PRE.dat";
+cfg.input.singleFile = fullfile(cfg.paths.dataDir, cfg.input.singleFileName);
 
 %% Splice all files in the working directory
 
@@ -43,7 +43,7 @@ cfg.load.mode = "allSubfolders";
 cfg.load.coordDir = cfg.paths.coordDir;
 
 %% Check bias
-%outputs = Load_subsets_multi_patient_input(cfg);
+outputs = Load_subsets_multi_patient_input(cfg);
 
 
 %% Check metab covariance
@@ -202,7 +202,7 @@ crlbCfg.metabolites = "all";
 crlbCfg.sumMetabolites = ["GPC+PCh", "NAA+NAAG", "Cr+PCr", "Glu+Gln"];
 
 % If true: if NAA+NAAG exists, remove NAA and NAAG, etc.
-crlbCfg.useSumPreferredMetabolites = false;
+crlbCfg.useSumPreferredMetabolites = true;
 
 % Histogram settings.
 crlbCfg.binWidth = 5;
@@ -461,7 +461,7 @@ fprintf("Saved simplified CSV files to:\n%s\n", outputDir);
 % Shared settings
 baseLrtCfg = struct();
 baseLrtCfg.patientIDs = "all";
-baseLrtCfg.excludeSumMetabolites = false;
+baseLrtCfg.excludeSumMetabolites = true;
 baseLrtCfg.sumMetabolites = ["GPC+PCh", "NAA+NAAG", "Cr+PCr", "Glu+Gln"];
 baseLrtCfg.minValidParts = 10;
 baseLrtCfg.minMetabolites = 2;
@@ -532,12 +532,12 @@ pairCfg.metabolites = "all";
 % pairCfg.metabolites = ["NAA", "Cr", "PCr", "Glu"];
 
 % Exclude summed metabolites.
-pairCfg.excludeSumMetabolites = false;
+pairCfg.excludeSumMetabolites = true;
 pairCfg.sumMetabolites = ["GPC+PCh", "NAA+NAAG", "Cr+PCr", "Glu+Gln"];
 
 % For unfiltered diagnostic run:
 % do not remove metabolites based on CRLB majority rule.
-pairCfg.useCRLBMajorityFilter = false;
+pairCfg.useCRLBMajorityFilter = true;
 
 % Pairwise valid repeated parts.
 pairCfg.ignoreZeros = true;
