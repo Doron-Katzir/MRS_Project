@@ -49,6 +49,8 @@ outputs = Load_subsets_multi_patient_input(cfg);
 %% Check metab covariance
 
 cfg.covariance.loadMode = "allSubfolders";
+% Preserve raw zero values until the centralized analysis-filtering stage.
+cfg.covariance.ignoreZeros = false;
 covOutputs = MetabCovarianceByPatient(cfg);
 
 
@@ -218,18 +220,55 @@ disp("CRLB summary table:")
 disp(crlbOutputs.summaryTable)
 
 
+%% ================= ANALYSIS FILTERING =================
+
+filterCfg = struct();
+filterCfg.patientIDs = "all";
+filterCfg.division = 1;
+filterCfg.metabolites = "all";
+
+% Preserve the current sum-preferred policy: sums remain and components are
+% removed before global CRLB-majority screening.
+filterCfg.useSumPreferredFilter = true;
+filterCfg.sumMetabolites = ["GPC+PCh", "NAA+NAAG", "Cr+PCr", "Glu+Gln"];
+
+% Pool finite Division-1 CRLB values across common patients and parts.
+filterCfg.useCRLBMajorityFilter = true;
+filterCfg.crlbMajorityThreshold = 100;
+
+% Canonical empirical observation handling.
+filterCfg.ignoreZeros = true;
+filterCfg.pairwiseMinValidParts = 10;
+filterCfg.pairwiseMinPatients = 3;
+
+% Preserve the temporal test's existing, distinct eligibility threshold.
+filterCfg.temporalMinValidParts = 8;
+filterCfg.temporalMinPatients = 3;
+filterCfg.temporalUseGlobalMetabolites = false;
+filterCfg.temporalCRLBThreshold = 100;
+filterCfg.temporalRequiredGoodFraction = 0.01;
+filterCfg.prepareTemporalCircularShift = true;
+
+% Preserve each Wishart example's requested panel before applying the same
+% sum-preferred and global CRLB-majority policy.
+filterCfg.wishartMinValidParts = 30;
+filterCfg.wishartViews.modeA = struct('metabolites', "all", 'minValidParts', 30);
+filterCfg.wishartViews.modeB = struct( ...
+    'metabolites', ["NAA", "Cr", "PCr", "Glu"], 'minValidParts', 30);
+filterCfg.wishartViews.modeC = struct('metabolites', "all", 'minValidParts', 30);
+
+[analysisData, filterReport] = ApplyAnalysisFilters( ...
+    covOutputs, deGraafOutputs, filterCfg);
+
+
 %% Configure statistical tests
 
 testCfg = struct();
 
-testCfg.minValidParts = 8;
-testCfg.minPatientsForGroupTest = 3;
 testCfg.nGroupPermutations = 5000;
-testCfg.randomSeed = 1;
-testCfg.crlbThreshold = 100;
-testCfg.requiredGoodFraction = 0.01;
+testCfg.rngSeed = 1;
 
-metabs = string(covOutputs.group.meanCorrTable.Properties.RowNames);
+metabs = analysisData.temporal.metabolites;
 
 if isempty(metabs) || all(metabs == "")
     metabs = string(covOutputs.group.meanCorrTable.Properties.VariableNames);
@@ -250,8 +289,7 @@ end
 testCfg.permutationPairs = [pairA, pairB];
 
 testOutputs = TestTemporalMetaboliteCorrelations( ...
-    covOutputs, ...
-    deGraafOutputs, ...
+    analysisData, ...
     testCfg);
 
 if isfield(testOutputs, "circularShiftTable") && ...
@@ -460,10 +498,6 @@ fprintf("Saved simplified CSV files to:\n%s\n", outputDir);
 
 % Shared settings
 baseLrtCfg = struct();
-baseLrtCfg.patientIDs = "all";
-baseLrtCfg.excludeSumMetabolites = true;
-baseLrtCfg.sumMetabolites = ["GPC+PCh", "NAA+NAAG", "Cr+PCr", "Glu+Gln"];
-baseLrtCfg.minValidParts = 30;
 baseLrtCfg.minMetabolites = 2;
 baseLrtCfg.alpha = 0.05;
 baseLrtCfg.applyNumericalRidge = true;
@@ -474,10 +508,10 @@ baseLrtCfg.exportResults = true;
 % Each patient gets the largest valid non-sum metabolite subset available for that patient.
 lrtCfg = baseLrtCfg;
 lrtCfg.metaboliteSelectionMode = "perPatientLargestValid";  % aliases: "perPatient" or "a"
-lrtCfg.metabolites = "all";
+lrtCfg.filterView = "modeA";
 lrtCfg.outputDir = fullfile(pwd, "WishartLRTResults_ModeA_PerPatientLargestValid");
 
-lrtOutputs_ModeA = TestWishartCovarianceLRT(covOutputs, deGraafOutputs, lrtCfg);
+lrtOutputs_ModeA = TestWishartCovarianceLRT(analysisData, lrtCfg);
 
 disp("Mode A: per-patient largest valid subset")
 disp(lrtOutputs_ModeA.patientSummaryTable)
@@ -487,14 +521,14 @@ disp(lrtOutputs_ModeA.groupTable)
 % The exact same predefined metabolite panel is requested for every patient.
 lrtCfg = baseLrtCfg;
 lrtCfg.metaboliteSelectionMode = "fixed";  % aliases: "predefined" or "b"
-lrtCfg.metabolites = ["NAA", "Cr", "PCr", "Glu"];
+lrtCfg.filterView = "modeB";
 lrtCfg.outputDir = fullfile(pwd, "WishartLRTResults_ModeB_PredefinedPanel");
 
-lrtOutputs_ModeB = TestWishartCovarianceLRT(covOutputs, deGraafOutputs, lrtCfg);
+lrtOutputs_ModeB = TestWishartCovarianceLRT(analysisData, lrtCfg);
 
 disp("Mode B: predefined fixed metabolite panel")
 disp("Fixed panel used:")
-disp(lrtCfg.metabolites')
+disp(analysisData.wishart.views.modeB.metabolites')
 disp(lrtOutputs_ModeB.patientSummaryTable)
 disp(lrtOutputs_ModeB.groupTable)
 
@@ -503,11 +537,11 @@ disp(lrtOutputs_ModeB.groupTable)
 % intersection, then run the LRT using that same common panel for every eligible patient.
 lrtCfg = baseLrtCfg;
 lrtCfg.metaboliteSelectionMode = "largestCommon";  % aliases: "common" or "c"
-lrtCfg.metabolites = "all";
+lrtCfg.filterView = "modeC";
 lrtCfg.runOnlyCommonPanelPatients = true;
 lrtCfg.outputDir = fullfile(pwd, "WishartLRTResults_ModeC_LargestCommon");
 
-lrtOutputs_ModeC = TestWishartCovarianceLRT(covOutputs, deGraafOutputs, lrtCfg);
+lrtOutputs_ModeC = TestWishartCovarianceLRT(analysisData, lrtCfg);
 
 disp("Mode C: largest common valid subset")
 disp("Common panel used:")
@@ -522,30 +556,6 @@ disp(lrtOutputs_ModeC.groupTable)
 
 pairCfg = struct();
 
-% Use all patients present in both outputs.
-pairCfg.patientIDs = "all";
-
-% Test all available non-sum metabolites.
-pairCfg.metabolites = "all";
-
-% Or manually use a cleaner fixed panel:
-% pairCfg.metabolites = ["NAA", "Cr", "PCr", "Glu"];
-
-% Exclude summed metabolites.
-pairCfg.excludeSumMetabolites = true;
-pairCfg.sumMetabolites = ["GPC+PCh", "NAA+NAAG", "Cr+PCr", "Glu+Gln"];
-
-% For unfiltered diagnostic run:
-% do not remove metabolites based on CRLB majority rule.
-pairCfg.useCRLBMajorityFilter = true;
-
-% Pairwise valid repeated parts.
-pairCfg.ignoreZeros = true;
-pairCfg.minValidParts = 10;
-
-% Minimum patients required for a group-level test.
-pairCfg.minPatientsForGroupTest = 3;
-
 % Significance threshold.
 pairCfg.alpha = 0.05;
 
@@ -554,7 +564,7 @@ pairCfg.exportResults = true;
 pairCfg.outputDir = fullfile(pwd, "PairwiseEmpiricalVsModelResults");
 
 % Run test.
-pairOutputs = TestPairwiseEmpiricalVsModelCorrelation(covOutputs, deGraafOutputs, pairCfg);
+pairOutputs = TestPairwiseEmpiricalVsModelCorrelation(analysisData, pairCfg);
 
 %% Display results
 
