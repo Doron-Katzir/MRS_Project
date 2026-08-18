@@ -13,10 +13,10 @@ cfg.paths.coordDir = fullfile(cfg.paths.rootDir, "LCMFit");
 %% Splice data and save coord files
 %% Splice only one file
 
-cfg.input.mode = "singleFile";
-cfg.input.singlePatientID = "P01";
-cfg.input.singleFileName = "meas_MID00020_FID54986_eja_svs_slaser_TE_80_1_PRE.dat";
-cfg.input.singleFile = fullfile(cfg.paths.dataDir, cfg.input.singleFileName);
+% cfg.input.mode = "singleFile";
+% cfg.input.singlePatientID = "P01";
+% cfg.input.singleFileName = "meas_MID00020_FID54986_eja_svs_slaser_TE_80_1_PRE.dat";
+% cfg.input.singleFile = fullfile(cfg.paths.dataDir, cfg.input.singleFileName);
 
 %% Splice all files in the working directory
 
@@ -154,7 +154,7 @@ plotCfg.matrixMetabs = "all";
 
 % CRLB rule
 plotCfg.crlbThreshold = 100;
-plotCfg.requiredGoodFraction = 0.90;
+plotCfg.requiredGoodFraction = 0.01;
 
 % Time-series plots
 plotCfg.doTimeSeriesPlots = true;
@@ -227,7 +227,7 @@ testCfg.minPatientsForGroupTest = 3;
 testCfg.nGroupPermutations = 5000;
 testCfg.randomSeed = 1;
 testCfg.crlbThreshold = 100;
-testCfg.requiredGoodFraction = 0.90;
+testCfg.requiredGoodFraction = 0.01;
 
 metabs = string(covOutputs.group.meanCorrTable.Properties.RowNames);
 
@@ -463,7 +463,7 @@ baseLrtCfg = struct();
 baseLrtCfg.patientIDs = "all";
 baseLrtCfg.excludeSumMetabolites = true;
 baseLrtCfg.sumMetabolites = ["GPC+PCh", "NAA+NAAG", "Cr+PCr", "Glu+Gln"];
-baseLrtCfg.minValidParts = 10;
+baseLrtCfg.minValidParts = 30;
 baseLrtCfg.minMetabolites = 2;
 baseLrtCfg.alpha = 0.05;
 baseLrtCfg.applyNumericalRidge = true;
