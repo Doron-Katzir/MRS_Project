@@ -261,7 +261,23 @@ filterCfg.wishartViews.modeC = struct('metabolites', "all", 'minValidParts', 30)
     covOutputs, deGraafOutputs, filterCfg);
 
 
-%% Configure statistical tests
+%% ================= STATISTICAL TEST CONFIGURATION =================
+
+statsCfg = struct();
+statsCfg.pairwise = struct();
+
+% Pairwise one-sample t-test significance threshold. Benjamini-Hochberg
+% FDR correction remains enabled by the validated implementation.
+statsCfg.pairwise.alpha = 0.05;
+statsCfg.pairwise.useFDR = true;
+
+% Preserve the existing pairwise exports and output location.
+statsCfg.pairwise.exportResults = true;
+statsCfg.pairwise.outputDir = fullfile( ...
+    pwd, "PairwiseEmpiricalVsModelResults");
+
+
+%% Configure temporal statistical tests
 
 testCfg = struct();
 
@@ -554,29 +570,21 @@ disp(lrtOutputs_ModeC.groupTable)
 %% Pairwise empirical-vs-LCModel/de Graaf correlation test
 % Option A: one-sample t-test across patients on Fisher-z differences
 
-pairCfg = struct();
-
-% Significance threshold.
-pairCfg.alpha = 0.05;
-
-% Export results.
-pairCfg.exportResults = true;
-pairCfg.outputDir = fullfile(pwd, "PairwiseEmpiricalVsModelResults");
-
 % Run test.
-pairOutputs = TestPairwiseEmpiricalVsModelCorrelation(analysisData, pairCfg);
+pairwise = ProjectStatistics.PairwiseEmpiricalVsModel( ...
+    analysisData.pairwise, statsCfg.pairwise);
 
 %% Display results
 
 disp("Pairwise empirical-vs-LCModel/deGraaf summary:")
-disp(pairOutputs.pairSummaryTable)
+disp(pairwise.summaryTable)
 
 disp("Patient-level pairwise results:")
-disp(pairOutputs.patientPairTable)
+disp(pairwise.patientTable)
 
 %% Show only FDR-significant pairs
 
-sigPairs = pairOutputs.pairSummaryTable(pairOutputs.pairSummaryTable.rejectH0_FDR == true, :);
+sigPairs = pairwise.summaryTable(pairwise.summaryTable.rejectH0_FDR == true, :);
 
 disp("FDR-significant empirical-vs-model pairs:")
 disp(sigPairs)
