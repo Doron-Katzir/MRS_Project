@@ -1,4 +1,4 @@
-function lrtOutputs = TestWishartCovarianceLRT(covOutputs, deGraafOutputs, lrtCfg)
+function lrtOutputs = TestWishartCovarianceLRT(inputA, varargin)
 % TestWishartCovarianceLRT
 %
 % Global covariance-matrix likelihood-ratio test for repeated MRS fits.
@@ -30,27 +30,26 @@ function lrtOutputs = TestWishartCovarianceLRT(covOutputs, deGraafOutputs, lrtCf
 %       common intersection across eligible patients, then rerun the LRT using
 %       that one common panel for every included patient.
 
-if nargin < 3 || isempty(lrtCfg)
-    lrtCfg = struct();
-end
-
+[analysisData, lrtCfg] = ResolveCentralizedInputs(inputA, varargin{:});
+[covOutputs, deGraafOutputs] = ExtractCanonicalOutputs(analysisData);
 opts = ParseLRTOptions(lrtCfg);
 
-patientIDs = ResolvePatientIDs(covOutputs, deGraafOutputs, opts.patientIDs);
-
-crlbMajorityTable = table();
-if opts.useCRLBMajorityFilter
-    crlbMajorityTable = BuildGlobalCRLBMajorityTable( ...
-        deGraafOutputs, patientIDs, opts.crlbMajorityThreshold);
-    opts.crlbMajorityTable = crlbMajorityTable;
-    opts.crlbValidMetabolites = crlbMajorityTable.metabolite(crlbMajorityTable.keepByCRLB);
-
-    fprintf('CRLB-majority filter kept %d/%d metabolites using threshold %.1f.\n', ...
-        numel(opts.crlbValidMetabolites), height(crlbMajorityTable), opts.crlbMajorityThreshold);
-else
-    opts.crlbMajorityTable = table();
-    opts.crlbValidMetabolites = strings(0, 1);
+viewName = char(string(GetOption(lrtCfg, 'filterView', "default")));
+if ~isfield(analysisData.wishart.views, viewName)
+    error('Unknown centralized Wishart filter view: %s.', viewName);
 end
+filterView = analysisData.wishart.views.(viewName);
+patientIDs = filterView.patientIDs;
+
+% Scientific filtering was completed by ApplyAnalysisFilters. These values
+% prevent the legacy selection helpers below from applying it a second time.
+opts.patientIDs = patientIDs;
+opts.metabolites = filterView.metabolites;
+opts.minValidParts = filterView.minValidParts;
+opts.crlbMajorityTable = analysisData.crlbMajorityTable;
+opts.crlbValidMetabolites = analysisData.crlbMajorityTable.metabolite( ...
+    analysisData.crlbMajorityTable.keepByCRLB);
+crlbMajorityTable = analysisData.crlbMajorityTable;
 
 panelDiscoveryTable = table();
 commonPanel = strings(0, 1);
@@ -275,7 +274,7 @@ lastError = "";
 while numel(currentMetabs) >= opts.minMetabolites
 
     try
-        [X, dataLabels] = ExtractDataMatrixFromPartTable(partTable, currentMetabs, opts.ignoreZeros);
+        [X, dataLabels] = ExtractDataMatrixFromPartTable(partTable, currentMetabs);
         Sigma0 = ExtractSquareMatrixFromTable(modelCovTable, dataLabels);
 
         % Remove metabolites whose model covariance row/column is not usable.
@@ -392,9 +391,6 @@ end
 function opts = ParseLRTOptions(cfg)
 
 opts = struct();
-opts.patientIDs = GetOption(cfg, 'patientIDs', "all");
-opts.metabolites = GetOption(cfg, 'metabolites', "all");
-
 modeDefault = "perPatientLargestValid";
 if isstruct(cfg) && isfield(cfg, 'useLargestCommonSubset') && logical(cfg.useLargestCommonSubset)
     modeDefault = "largestCommon";
@@ -428,24 +424,9 @@ end
 opts.runOnlyCommonPanelPatients = logical(GetOption(cfg, 'runOnlyCommonPanelPatients', true));
 opts.minMetabolites = double(GetOption(cfg, 'minMetabolites', 2));
 
-% Default true because sums such as Cr+PCr and Glu+Gln can make the
-% covariance matrix linearly dependent or near-singular if components are
-% also included.
-opts.excludeSumMetabolites = logical(GetOption(cfg, 'excludeSumMetabolites', true));
-opts.sumMetabolites = string(GetOption(cfg, 'sumMetabolites', ...
-    ["GPC+PCh", "NAA+NAAG", "Cr+PCr", "Glu+Gln"]));
-
-% CRLB-majority filter:
-% keep a metabolite only if, across all selected patients and parts,
-% the number of finite CRLB values below the threshold is larger than
-% the number of finite CRLB values at/above the threshold.
-opts.useCRLBMajorityFilter = logical(GetOption(cfg, 'useCRLBMajorityFilter', true));
-opts.crlbMajorityThreshold = double(GetOption(cfg, 'crlbMajorityThreshold', 100));
 opts.crlbMajorityTable = table();
 opts.crlbValidMetabolites = strings(0, 1);
 
-opts.ignoreZeros = logical(GetOption(cfg, 'ignoreZeros', true));
-opts.minValidParts = double(GetOption(cfg, 'minValidParts', 10));
 opts.alpha = double(GetOption(cfg, 'alpha', 0.05));
 
 % Numerical ridge is only meant to fix tiny numerical non-positive-definite
@@ -471,55 +452,6 @@ end
 end
 
 % -------------------------------------------------------------------------
-function patientIDs = ResolvePatientIDs(covOutputs, deGraafOutputs, requestedIDs)
-
-if ~isfield(covOutputs, 'patientResultsByID')
-    error('covOutputs.patientResultsByID is missing.');
-end
-if ~isfield(deGraafOutputs, 'patientResultsByID')
-    error('deGraafOutputs.patientResultsByID is missing.');
-end
-
-covFields = string(fieldnames(covOutputs.patientResultsByID));
-modelFields = string(fieldnames(deGraafOutputs.patientResultsByID));
-commonFields = intersect(covFields, modelFields, 'stable');
-
-if isempty(commonFields)
-    error('No common patient IDs found between covOutputs and deGraafOutputs.');
-end
-
-if isnumeric(requestedIDs)
-    tmp = strings(numel(requestedIDs), 1);
-    for k = 1:numel(requestedIDs)
-        tmp(k) = "P" + sprintf('%02d', requestedIDs(k));
-    end
-    requestedIDs = tmp;
-end
-
-requestedIDs = string(requestedIDs);
-
-if isscalar(requestedIDs) && strcmpi(requestedIDs, "all")
-    patientIDs = commonFields;
-else
-    requestedFields = strings(numel(requestedIDs), 1);
-    for k = 1:numel(requestedIDs)
-        requestedFields(k) = string(matlab.lang.makeValidName(char(requestedIDs(k))));
-    end
-
-    keep = ismember(requestedFields, commonFields);
-    missing = requestedIDs(~keep);
-    if ~isempty(missing)
-        warning('Requested patient IDs not found in both outputs: %s', strjoin(cellstr(missing), ', '));
-    end
-
-    patientIDs = requestedFields(keep);
-end
-
-patientIDs = patientIDs(:);
-
-end
-
-% -------------------------------------------------------------------------
 function patientResult = RunOnePatientLRT(partTable, modelCovTable, patientID, opts)
 
 candidateMetabs = SelectCandidateMetabolites(partTable, modelCovTable, opts);
@@ -528,7 +460,7 @@ if isempty(candidateMetabs)
     error('No candidate metabolites remained after matching partTable and model covariance table.');
 end
 
-[X, dataLabels] = ExtractDataMatrixFromPartTable(partTable, candidateMetabs, opts.ignoreZeros);
+[X, dataLabels] = ExtractDataMatrixFromPartTable(partTable, candidateMetabs);
 Sigma0 = ExtractSquareMatrixFromTable(modelCovTable, dataLabels);
 
 % Remove metabolites with non-finite model entries.
@@ -665,165 +597,10 @@ if ~(isscalar(string(opts.metabolites)) && strcmpi(string(opts.metabolites), "al
     candidateMetabs = candidateMetabs(keep);
 end
 
-if opts.excludeSumMetabolites
-    candidateMetabs = ApplySumPreferredFiltering(candidateMetabs, opts.sumMetabolites);
-end
-
-% Apply CRLB-majority filtering before running the covariance-matrix test.
-% This keeps only metabolites with more CRLB values below threshold than
-% at/above threshold across all selected patients and parts.
-if opts.useCRLBMajorityFilter
-    candidateMetabs = KeepMatchingNames(candidateMetabs, opts.crlbValidMetabolites);
-end
-
 candidateMetabs = candidateMetabs(:);
 
 end
 
-
-% -------------------------------------------------------------------------
-function crlbMajorityTable = BuildGlobalCRLBMajorityTable(deGraafOutputs, patientIDs, threshold)
-
-% Build one reliability row per metabolite using all selected patients and
-% all available Division_1 parts already stored in deGraafOutputs.
-%
-% Keep rule:
-%   keepByCRLB = nCRLBUnderThreshold > nCRLBOverOrEqualThreshold
-
-if ~isfield(deGraafOutputs, 'patientResultsByID')
-    error('deGraafOutputs.patientResultsByID is missing.');
-end
-
-allMetabs = strings(0, 1);
-allCRLB = cell(0, 1);
-
-for pIdx = 1:numel(patientIDs)
-
-    patientField = matlab.lang.makeValidName(char(patientIDs(pIdx)));
-
-    if ~isfield(deGraafOutputs.patientResultsByID, patientField)
-        continue;
-    end
-
-    patientResult = deGraafOutputs.patientResultsByID.(patientField);
-
-    if ~isfield(patientResult, 'partCRLB') || ~isfield(patientResult, 'metabList')
-        error(['Patient %s does not contain partCRLB/metabList. ', ...
-               'Rerun DeGraafAmplitudeCorrelationByPatient with partCRLB saved.'], patientField);
-    end
-
-    metabs = string(patientResult.metabList(:));
-    partCRLB = double(patientResult.partCRLB);
-
-    for mIdx = 1:numel(metabs)
-        existingIdx = FindMatchingNameIndex(allMetabs, metabs(mIdx));
-
-        vals = partCRLB(:, mIdx);
-        vals = vals(isfinite(vals));
-
-        if isempty(existingIdx)
-            allMetabs(end + 1, 1) = metabs(mIdx); %#ok<AGROW>
-            allCRLB{end + 1, 1} = vals(:); %#ok<AGROW>
-        else
-            allCRLB{existingIdx} = [allCRLB{existingIdx}; vals(:)]; %#ok<AGROW>
-        end
-    end
-end
-
-crlbMajorityTable = table();
-
-for mIdx = 1:numel(allMetabs)
-
-    vals = allCRLB{mIdx};
-    vals = vals(isfinite(vals));
-
-    nFinite = numel(vals);
-    nUnder = sum(vals < threshold);
-    nOverOrEqual = sum(vals >= threshold);
-
-    row = table();
-    row.metabolite = allMetabs(mIdx);
-    row.nFiniteCRLB = nFinite;
-    row.nCRLBUnderThreshold = nUnder;
-    row.nCRLBOverOrEqualThreshold = nOverOrEqual;
-    row.percentUnderThreshold = 100 * nUnder / max(nFinite, 1);
-    row.threshold = threshold;
-    row.keepByCRLB = nUnder > nOverOrEqual;
-
-    crlbMajorityTable = [crlbMajorityTable; row]; %#ok<AGROW>
-end
-
-end
-
-% -------------------------------------------------------------------------
-function metabsOut = ApplySumPreferredFiltering(metabsIn, sumMetabolites)
-
-% Sum-preferred rule:
-% If a summed metabolite exists, keep the sum and remove its components.
-
-metabsOut = string(metabsIn(:));
-sumMetabolites = string(sumMetabolites(:));
-
-for sIdx = 1:numel(sumMetabolites)
-
-    sumName = string(sumMetabolites(sIdx));
-
-    % Only remove components if the summed metabolite actually exists.
-    sumExists = ~isempty(FindMatchingNameIndex(metabsOut, sumName));
-
-    if ~sumExists
-        continue;
-    end
-
-    components = string(split(sumName, '+'));
-    remove = false(numel(metabsOut), 1);
-
-    for mIdx = 1:numel(metabsOut)
-        for cIdx = 1:numel(components)
-            if NamesMatch(metabsOut(mIdx), components(cIdx))
-                remove(mIdx) = true;
-            end
-        end
-    end
-
-    metabsOut = metabsOut(~remove);
-end
-
-end
-
-% -------------------------------------------------------------------------
-function metabsOut = KeepMatchingNames(metabsIn, allowedMetabs)
-
-metabsIn = string(metabsIn(:));
-allowedMetabs = string(allowedMetabs(:));
-
-keep = false(numel(metabsIn), 1);
-
-for mIdx = 1:numel(metabsIn)
-    keep(mIdx) = ~isempty(FindMatchingNameIndex(allowedMetabs, metabsIn(mIdx)));
-end
-
-metabsOut = metabsIn(keep);
-
-end
-
-% -------------------------------------------------------------------------
-function tf = NamesMatch(a, b)
-
-a = string(a);
-b = string(b);
-
-if strcmp(a, b)
-    tf = true;
-    return;
-end
-
-aValid = string(matlab.lang.makeValidName(char(a)));
-bValid = string(matlab.lang.makeValidName(char(b)));
-
-tf = strcmp(aValid, bValid);
-
-end
 
 % -------------------------------------------------------------------------
 function row = MakeEmptySummaryRow(patientID)
@@ -923,7 +700,7 @@ tf = ~isempty(idx);
 end
 
 % -------------------------------------------------------------------------
-function [X, labels] = ExtractDataMatrixFromPartTable(partTable, labels, ignoreZeros)
+function [X, labels] = ExtractDataMatrixFromPartTable(partTable, labels)
 
 labels = string(labels(:));
 X = nan(height(partTable), numel(labels));
@@ -937,10 +714,6 @@ for k = 1:numel(labels)
 
     values = partTable{:, idx};
     values = double(values);
-
-    if ignoreZeros
-        values(values == 0) = NaN;
-    end
 
     X(:, k) = values;
 end
@@ -1066,6 +839,60 @@ try
     p = chi2cdf(T, df, 'upper');
 catch
     p = 1 - chi2cdf(T, df);
+end
+
+end
+
+% -------------------------------------------------------------------------
+function [analysisData, lrtCfg] = ResolveCentralizedInputs(inputA, varargin)
+if isstruct(inputA) && isfield(inputA, 'kind') && ...
+        strcmp(string(inputA.kind), "MRSAnalysisData")
+    analysisData = inputA;
+    if isempty(varargin), lrtCfg = struct(); else, lrtCfg = varargin{1}; end
+    return;
+end
+
+if isempty(varargin)
+    error('Legacy interface requires covOutputs and deGraafOutputs.');
+end
+deGraafOutputs = varargin{1};
+if numel(varargin) >= 2 && ~isempty(varargin{2})
+    lrtCfg = varargin{2};
+else
+    lrtCfg = struct();
+end
+
+filterCfg = struct();
+filterCfg.patientIDs = GetOption(lrtCfg, 'patientIDs', "all");
+filterCfg.useSumPreferredFilter = GetOption(lrtCfg, 'excludeSumMetabolites', true);
+filterCfg.sumMetabolites = GetOption(lrtCfg, 'sumMetabolites', ...
+    ["GPC+PCh", "NAA+NAAG", "Cr+PCr", "Glu+Gln"]);
+filterCfg.useCRLBMajorityFilter = GetOption(lrtCfg, 'useCRLBMajorityFilter', true);
+filterCfg.crlbMajorityThreshold = GetOption(lrtCfg, 'crlbMajorityThreshold', 100);
+filterCfg.ignoreZeros = GetOption(lrtCfg, 'ignoreZeros', true);
+filterCfg.prepareTemporalCircularShift = false;
+filterCfg.wishartViews.legacy = struct( ...
+    'metabolites', GetOption(lrtCfg, 'metabolites', "all"), ...
+    'minValidParts', GetOption(lrtCfg, 'minValidParts', 10));
+[analysisData, ~] = ApplyAnalysisFilters(inputA, deGraafOutputs, filterCfg);
+lrtCfg.filterView = "legacy";
+end
+
+% -------------------------------------------------------------------------
+function [covOutputs, modelOutputs] = ExtractCanonicalOutputs(analysisData)
+covOutputs = struct();
+covOutputs.patientResultsByID = struct();
+modelOutputs = struct();
+modelOutputs.patientResultsByID = struct();
+
+for p = 1:numel(analysisData.patientIDs)
+    field = char(analysisData.patientIDs(p));
+    entry = analysisData.patientDataByID.(field);
+    covOutputs.patientResultsByID.(field).partTable = entry.partTable;
+    modelOutputs.patientResultsByID.(field).meanAmplitudeCovTable = ...
+        entry.modelCovarianceTable;
+    modelOutputs.patientResultsByID.(field).meanAmplitudeCorrTable = ...
+        entry.modelCorrelationTable;
 end
 
 end

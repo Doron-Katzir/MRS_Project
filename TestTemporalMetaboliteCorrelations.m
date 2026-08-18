@@ -1,4 +1,4 @@
-function testOutputs = TestTemporalMetaboliteCorrelations(covOutputs, deGraafOutputs, testCfg)
+function testOutputs = TestTemporalMetaboliteCorrelations(inputA, varargin)
 % TestTemporalMetaboliteCorrelations
 %
 % Statistical tests for temporal metabolite correlations.
@@ -60,15 +60,17 @@ function testOutputs = TestTemporalMetaboliteCorrelations(covOutputs, deGraafOut
 % testCfg.permutationPairs = ["Glu", "GABA"; "Glu+Gln", "GABA"];
 % testOutputs = TestTemporalMetaboliteCorrelations(covOutputs, deGraafOutputs, testCfg);
 
-if nargin < 2
-    deGraafOutputs = [];
-end
-
-if nargin < 3 || isempty(testCfg)
-    testCfg = struct();
-end
+[analysisData, testCfg] = ResolveCentralizedInputs(inputA, varargin{:});
+[covOutputs, deGraafOutputs] = ExtractCanonicalOutputs(analysisData);
+centralView = analysisData.temporal;
 
 testCfg = ApplyTestDefaults(testCfg);
+testCfg.patientIDs = centralView.patientIDs;
+testCfg.metabList = centralView.metabolites;
+testCfg.minValidParts = centralView.minValidParts;
+testCfg.minPatients = centralView.minPatients;
+testCfg.crlbThreshold = centralView.crlbThreshold;
+testCfg.requiredGoodFraction = centralView.requiredGoodFraction;
 
 if testCfg.exportTables && ~isfolder(testCfg.outputDir)
     mkdir(testCfg.outputDir);
@@ -76,9 +78,8 @@ end
 
 rng(testCfg.rngSeed);
 
-patientIDsAll = string(fieldnames(covOutputs.patientResultsByID));
-patientIDs = ResolvePatientIDs(testCfg.patientIDs, patientIDsAll);
-metabList = ResolveMetabList(testCfg.metabList, covOutputs);
+patientIDs = centralView.patientIDs;
+metabList = centralView.metabolites;
 
 testOutputs = struct();
 testOutputs.config = testCfg;
@@ -93,12 +94,7 @@ fprintf('Minimum patients per group test: %d\n', testCfg.minPatients);
 
 %% Build group-level CRLB reliability table
 
-groupCRLBQualityTable = BuildGroupCRLBQualityTable( ...
-    covOutputs, ...
-    patientIDs, ...
-    metabList, ...
-    testCfg.crlbThreshold, ...
-    testCfg.requiredGoodFraction);
+groupCRLBQualityTable = centralView.crlbQualityTable;
 
 testOutputs.groupCRLBQualityTable = groupCRLBQualityTable;
 
@@ -114,7 +110,8 @@ if testCfg.doFisherGroupTest
         patientIDs, ...
         metabList, ...
         groupCRLBQualityTable, ...
-        testCfg);
+        testCfg, ...
+        centralView);
 
     testOutputs.groupFisherTable = groupFisherTable;
     testOutputs.patientCorrelationTable = patientCorrelationTable;
@@ -133,13 +130,16 @@ end
 
 if testCfg.doCircularShiftPermutation
 
+    assert(centralView.circularShiftPrepared, ...
+        'analysisData was not prepared for circular-shift permutation testing.');
+
     fprintf('\nRunning circular-shift permutation test...\n');
 
     circularShiftTable = RunCircularShiftPermutationTest( ...
-        covOutputs, ...
         patientIDs, ...
         testCfg.permutationPairs, ...
-        testCfg);
+        testCfg, ...
+        centralView);
 
     testOutputs.circularShiftTable = circularShiftTable;
 
@@ -166,21 +166,12 @@ end
 
 function testCfg = ApplyTestDefaults(testCfg)
 
-testCfg = SetDefault(testCfg, "patientIDs", "all");
-testCfg = SetDefault(testCfg, "metabList", "all");
-
 testCfg = SetDefault(testCfg, "permutationPairs", [ ...
     "Glu", "GABA"; ...
     "Glu+Gln", "GABA"; ...
     "Glu", "Gln"; ...
     "Glu+Gln", "NAA+NAAG"; ...
     "GPC+PCh", "Cr+PCr"]);
-
-testCfg = SetDefault(testCfg, "minValidParts", 8);
-testCfg = SetDefault(testCfg, "minPatients", 3);
-
-testCfg = SetDefault(testCfg, "crlbThreshold", 100);
-testCfg = SetDefault(testCfg, "requiredGoodFraction", 0.90);
 
 testCfg = SetDefault(testCfg, "doFisherGroupTest", true);
 testCfg = SetDefault(testCfg, "doCircularShiftPermutation", true);
@@ -201,57 +192,11 @@ end
 
 end
 
-function patientIDs = ResolvePatientIDs(patientOption, patientIDsAll)
-
-if ischar(patientOption) || isstring(patientOption)
-
-    patientOption = string(patientOption);
-
-    if isscalar(patientOption) && patientOption == "all"
-        patientIDs = patientIDsAll;
-    else
-        patientIDs = patientOption(:);
-    end
-
-elseif isnumeric(patientOption)
-
-    patientIDs = patientIDsAll(patientOption);
-
-else
-    error("Unsupported testCfg.patientIDs format.");
-end
-
-missing = patientIDs(~ismember(patientIDs, patientIDsAll));
-
-if ~isempty(missing)
-    error("Requested patientIDs were not found: %s", strjoin(missing, ", "));
-end
-
-end
-
-function metabList = ResolveMetabList(metabOption, covOutputs)
-
-if ischar(metabOption) || isstring(metabOption)
-
-    metabOption = string(metabOption);
-
-    if isscalar(metabOption) && metabOption == "all"
-        metabList = string(covOutputs.metabList(:));
-    else
-        metabList = metabOption(:);
-    end
-
-else
-    metabList = string(metabOption(:));
-end
-
-end
-
 %% ========================================================================
 % Test 1: patient-level Fisher-z group test
 % ========================================================================
 
-function [groupTable, patientTable] = RunFisherGroupTest(covOutputs, deGraafOutputs, patientIDs, metabList, crlbQualityTable, testCfg)
+function [groupTable, patientTable] = RunFisherGroupTest(covOutputs, deGraafOutputs, patientIDs, metabList, crlbQualityTable, testCfg, centralView)
 
 nMetabs = numel(metabList);
 
@@ -273,14 +218,21 @@ for a = 1:nMetabs-1
         for pIdx = 1:numel(patientIDs)
 
             patientID = patientIDs(pIdx);
-            T = covOutputs.patientResultsByID.(char(patientID)).partTable;
-
-            [rVal, nValid] = ComputePatientCorrelation(T, metabA, metabB, testCfg.minValidParts);
+            sourceIdx = centralView.patientEligibilityTable.patientID == patientID & ...
+                centralView.patientEligibilityTable.metaboliteA == metabA & ...
+                centralView.patientEligibilityTable.metaboliteB == metabB;
+            assert(sum(sourceIdx) == 1, ...
+                'Central filtering invariant violated for temporal patient/pair eligibility.');
+            source = centralView.patientEligibilityTable(sourceIdx, :);
+            rVal = source.rEmpirical;
+            nValid = source.nValidParts;
 
             patientR(pIdx) = rVal;
             patientN(pIdx) = nValid;
 
-            if ~isnan(rVal)
+            if source.eligible
+                assert(isfinite(rVal), ...
+                    'Central filtering invariant violated: eligible temporal r must be finite.');
                 patientZ(pIdx) = FisherZ(rVal);
                 patientUsed(pIdx) = true;
             end
@@ -303,13 +255,18 @@ for a = 1:nMetabs-1
                 'usedInGroupTest'})];
         end
 
-        valid = ~isnan(patientZ);
+        valid = patientUsed;
         zVals = patientZ(valid);
         rVals = patientR(valid);
 
         nPatientsUsed = sum(valid);
 
-        if nPatientsUsed >= testCfg.minPatients
+        pairIdx = centralView.pairTable.metaboliteA == metabA & ...
+            centralView.pairTable.metaboliteB == metabB;
+        assert(sum(pairIdx) == 1, ...
+            'Central filtering invariant violated for temporal group eligibility.');
+
+        if centralView.pairTable.groupEligible(pairIdx)
 
             meanZ = mean(zVals);
             sdZ = std(zVals, 0);
@@ -354,7 +311,7 @@ for a = 1:nMetabs-1
         end
 
         [fracA, fracB, pairCRLBStatus] = GetGroupCRLBStatus( ...
-            metabA, metabB, crlbQualityTable, testCfg.requiredGoodFraction);
+            metabA, metabB, crlbQualityTable);
 
         [signedLCModelCorr, absLCModelCorr] = LookupDeGraafCorrelation( ...
             deGraafOutputs, metabA, metabB);
@@ -434,35 +391,6 @@ patientTable = patientRows;
 
 end
 
-function [rVal, nValid] = ComputePatientCorrelation(T, metabA, metabB, minValidParts)
-
-rVal = NaN;
-nValid = 0;
-
-T = SortPartTable(T);
-
-colA = matlab.lang.makeValidName(char(metabA));
-colB = matlab.lang.makeValidName(char(metabB));
-
-if ~ismember(colA, string(T.Properties.VariableNames)) || ...
-   ~ismember(colB, string(T.Properties.VariableNames))
-    return;
-end
-
-x = T.(colA);
-y = T.(colB);
-
-valid = ~isnan(x) & ~isnan(y);
-nValid = sum(valid);
-
-if nValid < minValidParts
-    return;
-end
-
-rVal = corr(x(valid), y(valid));
-
-end
-
 function z = FisherZ(r)
 
 r = max(min(r, 0.999999), -0.999999);
@@ -474,7 +402,7 @@ end
 % Test 2: circular-shift permutation test
 % ========================================================================
 
-function circularShiftTable = RunCircularShiftPermutationTest(covOutputs, patientIDs, permutationPairs, testCfg)
+function circularShiftTable = RunCircularShiftPermutationTest(patientIDs, permutationPairs, testCfg, centralView)
 
 if isempty(permutationPairs)
     circularShiftTable = table();
@@ -496,14 +424,21 @@ for pairIdx = 1:nPairs
     perPatientP = nan(numel(patientIDs), 1);
     perPatientN = nan(numel(patientIDs), 1);
     shiftZDistributions = cell(numel(patientIDs), 1);
+    centralShiftEligible = false(numel(patientIDs), 1);
 
     for pIdx = 1:numel(patientIDs)
 
         patientID = patientIDs(pIdx);
-        T = covOutputs.patientResultsByID.(char(patientID)).partTable;
-
-        [rObs, nObs, rShiftVals] = ComputeCircularShiftCorrelationsForPatient( ...
-            T, metabA, metabB, testCfg.minValidParts);
+        sourceIdx = centralView.patientEligibilityTable.patientID == patientID & ...
+            centralView.patientEligibilityTable.metaboliteA == metabA & ...
+            centralView.patientEligibilityTable.metaboliteB == metabB;
+        assert(sum(sourceIdx) == 1, ...
+            'Central filtering invariant violated for circular-shift eligibility.');
+        source = centralView.patientEligibilityTable(sourceIdx, :);
+        rObs = source.rEmpirical;
+        nObs = source.nValidParts;
+        rShiftVals = source.shiftRValues{1};
+        centralShiftEligible(pIdx) = source.shiftEligible;
 
         observedR(pIdx) = rObs;
         perPatientN(pIdx) = nObs;
@@ -519,10 +454,17 @@ for pairIdx = 1:nPairs
         end
     end
 
-    validPatients = ~isnan(observedZ) & CellHasValues(shiftZDistributions);
+    validPatients = centralShiftEligible;
+    assert(all(~validPatients | (isfinite(observedZ) & cellfun(@(x) ~isempty(x), shiftZDistributions))), ...
+        'Central filtering invariant violated for circular-shift patient data.');
     nPatientsUsed = sum(validPatients);
 
-    if nPatientsUsed >= testCfg.minPatients
+    pairViewIdx = centralView.pairTable.metaboliteA == metabA & ...
+        centralView.pairTable.metaboliteB == metabB;
+    assert(sum(pairViewIdx) == 1, ...
+        'Central filtering invariant violated for circular-shift group eligibility.');
+
+    if centralView.pairTable.shiftGroupEligible(pairViewIdx)
 
         observedGroupMeanZ = mean(observedZ(validPatients));
         observedGroupR = tanh(observedGroupMeanZ);
@@ -604,223 +546,7 @@ circularShiftTable = sortrows(circularShiftTable, "groupCircularShiftPValue", "a
 
 end
 
-function [rObs, nObs, rShiftVals] = ComputeCircularShiftCorrelationsForPatient(T, metabA, metabB, minValidParts)
-
-rObs = NaN;
-nObs = 0;
-rShiftVals = [];
-
-T = SortPartTable(T);
-
-colA = matlab.lang.makeValidName(char(metabA));
-colB = matlab.lang.makeValidName(char(metabB));
-
-if ~ismember(colA, string(T.Properties.VariableNames)) || ...
-   ~ismember(colB, string(T.Properties.VariableNames))
-    return;
-end
-
-x = T.(colA);
-y = T.(colB);
-
-valid = ~isnan(x) & ~isnan(y);
-nObs = sum(valid);
-
-if nObs < minValidParts
-    return;
-end
-
-rObs = corr(x(valid), y(valid));
-
-nTime = numel(x);
-rShiftVals = nan(nTime - 1, 1);
-
-for shiftVal = 1:nTime-1
-
-    yShift = circshift(y, shiftVal);
-    validShift = ~isnan(x) & ~isnan(yShift);
-
-    if sum(validShift) >= minValidParts
-        rShiftVals(shiftVal) = corr(x(validShift), yShift(validShift));
-    end
-end
-
-rShiftVals = rShiftVals(~isnan(rShiftVals));
-
-end
-
-function mask = CellHasValues(C)
-
-mask = false(numel(C), 1);
-
-for i = 1:numel(C)
-    mask(i) = ~isempty(C{i}) && any(~isnan(C{i}));
-end
-
-end
-
-%% ========================================================================
-% CRLB reliability table
-% ========================================================================
-
-function crlbQualityTable = BuildGroupCRLBQualityTable(covOutputs, patientIDs, metabList, crlbThreshold, requiredGoodFraction)
-
-metabList = string(metabList(:));
-nMetabs = numel(metabList);
-
-goodCRLBCount = zeros(nMetabs, 1);
-totalInstanceCount = zeros(nMetabs, 1);
-
-for pIdx = 1:numel(patientIDs)
-
-    patientID = patientIDs(pIdx);
-
-    partTable = covOutputs.patientResultsByID.(char(patientID)).partTable;
-    coordTable = covOutputs.patientResultsByID.(char(patientID)).coordTable;
-
-    patientTable = BuildPatientCRLBQualityTable( ...
-        covOutputs, ...
-        metabList, ...
-        coordTable, ...
-        partTable, ...
-        crlbThreshold, ...
-        requiredGoodFraction);
-
-    [tf, idx] = ismember(metabList, patientTable.metabolite);
-
-    goodCRLBCount(tf) = goodCRLBCount(tf) + patientTable.nCRLBUnder100(idx(tf));
-    totalInstanceCount(tf) = totalInstanceCount(tf) + patientTable.nInstances(idx(tf));
-end
-
-fractionCRLBUnder100 = goodCRLBCount ./ totalInstanceCount;
-fails90PercentRule = fractionCRLBUnder100 < requiredGoodFraction;
-
-crlbQualityTable = table( ...
-    metabList, ...
-    goodCRLBCount, ...
-    totalInstanceCount, ...
-    fractionCRLBUnder100, ...
-    fails90PercentRule, ...
-    'VariableNames', { ...
-    'metabolite', ...
-    'nCRLBUnder100', ...
-    'nInstances', ...
-    'fractionCRLBUnder100', ...
-    'fails90PercentRule'});
-
-end
-
-function patientCRLBQualityTable = BuildPatientCRLBQualityTable(covOutputs, metabList, coordTable, partTable, crlbThreshold, requiredGoodFraction)
-
-metabList = string(metabList(:));
-nMetabs = numel(metabList);
-
-if isfield(covOutputs, "settings") && isfield(covOutputs.settings, "division")
-    divisionUsed = covOutputs.settings.division;
-else
-    divisionUsed = 1;
-end
-
-partsUsed = partTable.part;
-
-coordTable.name = string(coordTable.name);
-coordTable.filename = string(coordTable.filename);
-
-crlbCol = FindCRLBColumn(coordTable);
-
-nRows = height(coordTable);
-parsedDivision = nan(nRows, 1);
-parsedPart = nan(nRows, 1);
-
-for r = 1:nRows
-
-    [~, baseName, ext] = fileparts(coordTable.filename(r));
-    curFile = string(baseName) + string(ext);
-
-    tok = regexp(curFile, ...
-        '.*Division_(\d+)_(?:part_)?(\d+)\.basis\.coord$', ...
-        'tokens', 'once');
-
-    if isempty(tok)
-        continue;
-    end
-
-    parsedDivision(r) = str2double(tok{1});
-    parsedPart(r) = str2double(tok{2});
-end
-
-coordTable.division = parsedDivision;
-coordTable.part = parsedPart;
-
-coordTable = coordTable(coordTable.division == divisionUsed, :);
-
-goodCRLBCount = zeros(nMetabs, 1);
-totalInstanceCount = zeros(nMetabs, 1);
-fractionCRLBUnder100 = nan(nMetabs, 1);
-fails90PercentRule = false(nMetabs, 1);
-
-for m = 1:nMetabs
-
-    metabName = metabList(m);
-
-    crlbVals = nan(numel(partsUsed), 1);
-
-    for partIdx = 1:numel(partsUsed)
-
-        curPart = partsUsed(partIdx);
-        idx = coordTable.name == metabName & coordTable.part == curPart;
-
-        if sum(idx) >= 1
-            tmp = coordTable.(char(crlbCol))(idx);
-            crlbVals(partIdx) = double(tmp(1));
-        end
-    end
-
-    totalInstanceCount(m) = numel(crlbVals);
-    goodCRLBCount(m) = sum(crlbVals < crlbThreshold, 'omitnan');
-
-    fractionCRLBUnder100(m) = goodCRLBCount(m) / totalInstanceCount(m);
-    fails90PercentRule(m) = fractionCRLBUnder100(m) < requiredGoodFraction;
-end
-
-patientCRLBQualityTable = table( ...
-    metabList, ...
-    goodCRLBCount, ...
-    totalInstanceCount, ...
-    fractionCRLBUnder100, ...
-    fails90PercentRule, ...
-    'VariableNames', { ...
-    'metabolite', ...
-    'nCRLBUnder100', ...
-    'nInstances', ...
-    'fractionCRLBUnder100', ...
-    'fails90PercentRule'});
-
-end
-
-function crlbCol = FindCRLBColumn(T)
-
-varNames = string(T.Properties.VariableNames);
-
-crlbCandidates = ["CRLB", "crlb", "SD", "sd", ...
-    "percentSD", "PercentSD", "pctSD", "pctCrLB", ...
-    "crlbPercent", "CRLBPercent"];
-
-crlbCol = "";
-
-for c = crlbCandidates
-    if ismember(c, varNames)
-        crlbCol = c;
-        return;
-    end
-end
-
-error("Could not find a CRLB / %%SD column. Available columns are:\n%s", ...
-    strjoin(varNames, ", "));
-
-end
-
-function [fracA, fracB, status] = GetGroupCRLBStatus(metabA, metabB, crlbQualityTable, requiredGoodFraction)
+function [fracA, fracB, status] = GetGroupCRLBStatus(metabA, metabB, crlbQualityTable)
 
 crlbQualityTable.metabolite = string(crlbQualityTable.metabolite);
 
@@ -839,7 +565,9 @@ else
     fracB = crlbQualityTable.fractionCRLBUnder100(idxB);
 end
 
-if fracA >= requiredGoodFraction && fracB >= requiredGoodFraction
+passA = ~isempty(idxA) && crlbQualityTable.passesRequiredFraction(idxA);
+passB = ~isempty(idxB) && crlbQualityTable.passesRequiredFraction(idxB);
+if passA && passB
     status = "PASS";
 else
     status = "FAIL";
@@ -971,15 +699,60 @@ end
 
 end
 
-%% ========================================================================
-% Small utility
-% ========================================================================
-
-function T = SortPartTable(T)
-
-if ismember("part", string(T.Properties.VariableNames))
-    [~, order] = sort(T.part);
-    T = T(order, :);
+% -------------------------------------------------------------------------
+function [analysisData, testCfg] = ResolveCentralizedInputs(inputA, varargin)
+if isstruct(inputA) && isfield(inputA, 'kind') && ...
+        strcmp(string(inputA.kind), "MRSAnalysisData")
+    analysisData = inputA;
+    if isempty(varargin), testCfg = struct(); else, testCfg = varargin{1}; end
+    return;
 end
 
+if isempty(varargin)
+    error('Legacy interface requires covOutputs and deGraafOutputs.');
+end
+deGraafOutputs = varargin{1};
+if numel(varargin) >= 2 && ~isempty(varargin{2})
+    testCfg = varargin{2};
+else
+    testCfg = struct();
+end
+
+filterCfg = struct();
+filterCfg.patientIDs = GetFieldDefault(testCfg, 'patientIDs', "all");
+filterCfg.metabolites = GetFieldDefault(testCfg, 'metabList', "all");
+filterCfg.useSumPreferredFilter = false;
+filterCfg.useCRLBMajorityFilter = false;
+filterCfg.ignoreZeros = true;
+filterCfg.temporalMinValidParts = GetFieldDefault(testCfg, 'minValidParts', 8);
+filterCfg.temporalMinPatients = GetFieldDefault(testCfg, 'minPatients', 3);
+filterCfg.temporalUseGlobalMetabolites = false;
+filterCfg.temporalCRLBThreshold = GetFieldDefault(testCfg, 'crlbThreshold', 100);
+filterCfg.temporalRequiredGoodFraction = GetFieldDefault(testCfg, 'requiredGoodFraction', 0.90);
+[analysisData, ~] = ApplyAnalysisFilters(inputA, deGraafOutputs, filterCfg);
+end
+
+% -------------------------------------------------------------------------
+function [covOutputs, modelOutputs] = ExtractCanonicalOutputs(analysisData)
+covOutputs = struct();
+covOutputs.patientResultsByID = struct();
+covOutputs.metabList = analysisData.temporal.metabolites;
+covOutputs.settings.division = analysisData.division;
+covOutputs.group = analysisData.empiricalGroup;
+modelOutputs = struct();
+modelOutputs.patientResultsByID = struct();
+modelOutputs.group = analysisData.modelGroup;
+
+for p = 1:numel(analysisData.temporal.patientIDs)
+    field = char(analysisData.temporal.patientIDs(p));
+    entry = analysisData.patientDataByID.(field);
+    covOutputs.patientResultsByID.(field).partTable = entry.partTable;
+    covOutputs.patientResultsByID.(field).coordTable = entry.empiricalCoordTable;
+    modelOutputs.patientResultsByID.(field).meanAmplitudeCovTable = entry.modelCovarianceTable;
+    modelOutputs.patientResultsByID.(field).meanAmplitudeCorrTable = entry.modelCorrelationTable;
+end
+end
+
+function value = GetFieldDefault(s, name, defaultValue)
+if isstruct(s) && isfield(s, name), value = s.(name); else, value = defaultValue; end
 end
