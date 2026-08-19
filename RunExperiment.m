@@ -43,7 +43,7 @@ cfg.load.mode = "allSubfolders";
 cfg.load.coordDir = cfg.paths.coordDir;
 
 %% Check bias
-outputs = Load_subsets_multi_patient_input(cfg);
+% outputs = Load_subsets_multi_patient_input(cfg);
 
 
 %% Check metab covariance
@@ -265,6 +265,7 @@ filterCfg.wishartViews.modeC = struct('metabolites', "all", 'minValidParts', 30)
 
 statsCfg = struct();
 statsCfg.pairwise = struct();
+statsCfg.temporal = struct();
 
 % Pairwise one-sample t-test significance threshold. Benjamini-Hochberg
 % FDR correction remains enabled by the validated implementation.
@@ -279,10 +280,13 @@ statsCfg.pairwise.outputDir = fullfile( ...
 
 %% Configure temporal statistical tests
 
-testCfg = struct();
-
-testCfg.nGroupPermutations = 5000;
-testCfg.rngSeed = 1;
+statsCfg.temporal.doFisherGroupTest = true;
+statsCfg.temporal.doCircularShiftPermutation = true;
+statsCfg.temporal.nGroupPermutations = 5000;
+statsCfg.temporal.rngSeed = 1;
+statsCfg.temporal.useFDR = true;
+statsCfg.temporal.exportTables = true;
+statsCfg.temporal.outputDir = fullfile(pwd, "TemporalCorrelationStats");
 
 metabs = analysisData.temporal.metabolites;
 
@@ -302,16 +306,14 @@ for iMetab = 1:nMetabs
     end
 end
 
-testCfg.permutationPairs = [pairA, pairB];
+statsCfg.temporal.permutationPairs = [pairA, pairB];
 
-testOutputs = TestTemporalMetaboliteCorrelations( ...
-    analysisData, ...
-    testCfg);
+temporal = ProjectStatistics.TemporalCorrelation( ...
+    analysisData.temporal, statsCfg.temporal);
 
-if isfield(testOutputs, "circularShiftTable") && ...
-        ~isempty(testOutputs.circularShiftTable)
+if ~isempty(temporal.permutationResults)
 
-    S = testOutputs.circularShiftTable;
+    S = temporal.permutationResults;
 
     if ismember("groupCircularShiftPValue", string(S.Properties.VariableNames))
 
@@ -346,7 +348,7 @@ if isfield(testOutputs, "circularShiftTable") && ...
             S = sortrows(S, "qValueCircularShift_FDR", "ascend");
         end
 
-        testOutputs.circularShiftTable = S;
+        temporal.permutationResults = S;
     end
 end
 
@@ -356,7 +358,7 @@ if ~isfolder(outputDir)
     mkdir(outputDir);
 end
 
-T = testOutputs.groupFisherTable;
+T = temporal.summaryTable;
 
 wantedColsMain = [ ...
     "metaboliteA", ...
@@ -421,10 +423,9 @@ if ismember("pValue", availableColsMain) && ...
         fullfile(outputDir, "Exploratory_Candidates_p_uncorrected.csv"));
 end
 
-if isfield(testOutputs, "circularShiftTable") && ...
-        ~isempty(testOutputs.circularShiftTable)
+if ~isempty(temporal.permutationResults)
 
-    S = testOutputs.circularShiftTable;
+    S = temporal.permutationResults;
 
     wantedColsShift = [ ...
         "metaboliteA", ...
@@ -449,10 +450,9 @@ if isfield(testOutputs, "circularShiftTable") && ...
         fullfile(outputDir, "Circular_Shift_All_Pairs_Simplified.csv"));
 end
 
-if isfield(testOutputs, "patientCorrelationTable") && ...
-        ~isempty(testOutputs.patientCorrelationTable)
+if ~isempty(temporal.patientTable)
 
-    P = testOutputs.patientCorrelationTable;
+    P = temporal.patientTable;
 
     wantedColsPatient = [ ...
         "metaboliteA", ...
@@ -470,10 +470,9 @@ if isfield(testOutputs, "patientCorrelationTable") && ...
         fullfile(outputDir, "Patient_Level_Correlations_Simplified.csv"));
 end
 
-if isfield(testOutputs, "groupCRLBQualityTable") && ...
-        ~isempty(testOutputs.groupCRLBQualityTable)
+if ~isempty(temporal.crlbQualityTable)
 
-    Q = testOutputs.groupCRLBQualityTable;
+    Q = temporal.crlbQualityTable;
 
     wantedColsCRLB = [ ...
         "metabolite", ...
@@ -496,11 +495,10 @@ if isfield(testOutputs, "groupCRLBQualityTable") && ...
 end
 
 fprintf("\nFinished temporal correlation tests.\n");
-fprintf("Number of metabolite pairs tested with Fisher-z: %d\n", height(testOutputs.groupFisherTable));
+fprintf("Number of metabolite pairs tested with Fisher-z: %d\n", height(temporal.summaryTable));
 
-if isfield(testOutputs, "circularShiftTable") && ...
-        ~isempty(testOutputs.circularShiftTable)
-    fprintf("Number of metabolite pairs tested with circular shift: %d\n", height(testOutputs.circularShiftTable));
+if ~isempty(temporal.permutationResults)
+    fprintf("Number of metabolite pairs tested with circular shift: %d\n", height(temporal.permutationResults));
 end
 
 fprintf("Saved simplified CSV files to:\n%s\n", outputDir);

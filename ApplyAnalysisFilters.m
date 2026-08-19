@@ -86,6 +86,14 @@ analysisData.temporal.crlbThreshold = opts.temporalCRLBThreshold;
 analysisData.temporal.requiredGoodFraction = opts.temporalRequiredGoodFraction;
 analysisData.temporal.crlbQualityTable = temporalCRLBQualityTable;
 analysisData.temporal.circularShiftPrepared = opts.prepareTemporalCircularShift;
+% Focused group summaries used only for the temporal result's descriptive
+% empirical-vs-model columns. Raw patient/project state stays outside this view.
+analysisData.temporal.empiricalMeanAbsCorrTable = ...
+    analysisData.empiricalGroup.meanAbsCorrTable;
+analysisData.temporal.modelMeanAmplitudeCorrTable = GetOptionalField( ...
+    analysisData.modelGroup, 'meanAmplitudeCorrTable', table());
+analysisData.temporal.modelMeanAbsAmplitudeCorrTable = GetOptionalField( ...
+    analysisData.modelGroup, 'meanAbsAmplitudeCorrTable', table());
 
 analysisData.wishart = struct();
 analysisData.wishart.patientIDs = patientIDs;
