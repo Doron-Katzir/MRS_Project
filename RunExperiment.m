@@ -266,6 +266,7 @@ filterCfg.wishartViews.modeC = struct('metabolites', "all", 'minValidParts', 30)
 statsCfg = struct();
 statsCfg.pairwise = struct();
 statsCfg.temporal = struct();
+statsCfg.wishart = struct();
 
 % Pairwise one-sample t-test significance threshold. Benjamini-Hochberg
 % FDR correction remains enabled by the validated implementation.
@@ -276,6 +277,23 @@ statsCfg.pairwise.useFDR = true;
 statsCfg.pairwise.exportResults = true;
 statsCfg.pairwise.outputDir = fullfile( ...
     pwd, "PairwiseEmpiricalVsModelResults");
+
+% Wishart covariance LRT mathematical and reporting parameters. Patient and
+% metabolite-panel eligibility remains in filterCfg.wishartViews.
+statsCfg.wishart.minMetabolites = 2;
+statsCfg.wishart.alpha = 0.05;
+statsCfg.wishart.applyNumericalRidge = true;
+statsCfg.wishart.ridgeScale = 1e-8;
+statsCfg.wishart.maxRidgeSteps = 10;
+statsCfg.wishart.runOnlyCommonPanelPatients = true;
+statsCfg.wishart.exportResults = true;
+statsCfg.wishart.outputDirs = struct();
+statsCfg.wishart.outputDirs.modeA = fullfile( ...
+    pwd, "WishartLRTResults_ModeA_PerPatientLargestValid");
+statsCfg.wishart.outputDirs.modeB = fullfile( ...
+    pwd, "WishartLRTResults_ModeB_PredefinedPanel");
+statsCfg.wishart.outputDirs.modeC = fullfile( ...
+    pwd, "WishartLRTResults_ModeC_LargestCommon");
 
 
 %% Configure temporal statistical tests
@@ -505,64 +523,34 @@ fprintf("Saved simplified CSV files to:\n%s\n", outputDir);
 
 
 
-%% Wishart / covariance LRT examples
-% Put one of these blocks in RunExperiment.m after:
-%   covOutputs = MetabCovarianceByPatient(cfg);
-%   deGraafOutputs = DeGraafAmplitudeCorrelationByPatient(cfg);
+%% Wishart covariance LRT
 
-% Shared settings
-baseLrtCfg = struct();
-baseLrtCfg.minMetabolites = 2;
-baseLrtCfg.alpha = 0.05;
-baseLrtCfg.applyNumericalRidge = true;
-baseLrtCfg.ridgeScale = 1e-8;
-baseLrtCfg.exportResults = true;
+wishart = ProjectStatistics.WishartCovarianceLRT( ...
+    analysisData.wishart, statsCfg.wishart);
 
 %% Mode A: per-patient largest valid subset
 % Each patient gets the largest valid non-sum metabolite subset available for that patient.
-lrtCfg = baseLrtCfg;
-lrtCfg.metaboliteSelectionMode = "perPatientLargestValid";  % aliases: "perPatient" or "a"
-lrtCfg.filterView = "modeA";
-lrtCfg.outputDir = fullfile(pwd, "WishartLRTResults_ModeA_PerPatientLargestValid");
-
-lrtOutputs_ModeA = TestWishartCovarianceLRT(analysisData, lrtCfg);
-
 disp("Mode A: per-patient largest valid subset")
-disp(lrtOutputs_ModeA.patientSummaryTable)
-disp(lrtOutputs_ModeA.groupTable)
+disp(wishart.modes.modeA.patientTable)
+disp(wishart.modes.modeA.summaryTable)
 
 %% Mode B: predefined fixed metabolite panel
 % The exact same predefined metabolite panel is requested for every patient.
-lrtCfg = baseLrtCfg;
-lrtCfg.metaboliteSelectionMode = "fixed";  % aliases: "predefined" or "b"
-lrtCfg.filterView = "modeB";
-lrtCfg.outputDir = fullfile(pwd, "WishartLRTResults_ModeB_PredefinedPanel");
-
-lrtOutputs_ModeB = TestWishartCovarianceLRT(analysisData, lrtCfg);
-
 disp("Mode B: predefined fixed metabolite panel")
 disp("Fixed panel used:")
-disp(analysisData.wishart.views.modeB.metabolites')
-disp(lrtOutputs_ModeB.patientSummaryTable)
-disp(lrtOutputs_ModeB.groupTable)
+disp(wishart.modes.modeB.diagnostics.preparedMetabolites')
+disp(wishart.modes.modeB.patientTable)
+disp(wishart.modes.modeB.summaryTable)
 
 %% Mode C: largest common valid subset
 % First find the largest valid panel for each patient, then take the common
 % intersection, then run the LRT using that same common panel for every eligible patient.
-lrtCfg = baseLrtCfg;
-lrtCfg.metaboliteSelectionMode = "largestCommon";  % aliases: "common" or "c"
-lrtCfg.filterView = "modeC";
-lrtCfg.runOnlyCommonPanelPatients = true;
-lrtCfg.outputDir = fullfile(pwd, "WishartLRTResults_ModeC_LargestCommon");
-
-lrtOutputs_ModeC = TestWishartCovarianceLRT(analysisData, lrtCfg);
-
 disp("Mode C: largest common valid subset")
 disp("Common panel used:")
-disp(lrtOutputs_ModeC.commonPanel')
-disp(lrtOutputs_ModeC.panelDiscoveryTable)
-disp(lrtOutputs_ModeC.patientSummaryTable)
-disp(lrtOutputs_ModeC.groupTable)
+disp(wishart.modes.modeC.commonPanel')
+disp(wishart.modes.modeC.panelDiscoveryTable)
+disp(wishart.modes.modeC.patientTable)
+disp(wishart.modes.modeC.summaryTable)
 
 
 %% Pairwise empirical-vs-LCModel/de Graaf correlation test

@@ -98,6 +98,9 @@ analysisData.temporal.modelMeanAbsAmplitudeCorrTable = GetOptionalField( ...
 analysisData.wishart = struct();
 analysisData.wishart.patientIDs = patientIDs;
 analysisData.wishart.views = wishartViews;
+analysisData.wishart.crlbMajorityTable = crlbMajorityTable;
+analysisData.wishart.patientDataByID = BuildFocusedWishartPatientData( ...
+    patientDataByID, patientIDs);
 
 analysisData.crlbMajorityTable = crlbMajorityTable;
 
@@ -372,6 +375,17 @@ for k = 1:numel(names)
     view.metaboliteDecisions = decisions;
     view.minValidParts = double(GetOption(cfg, 'minValidParts', opts.wishartMinValidParts));
     views.(name) = view;
+end
+end
+
+function focusedDataByID = BuildFocusedWishartPatientData(dataByID, patientIDs)
+focusedDataByID = struct();
+for p = 1:numel(patientIDs)
+    field = char(patientIDs(p));
+    source = dataByID.(field);
+    focusedDataByID.(field) = struct( ...
+        'partTable', source.partTable, ...
+        'modelCovarianceTable', source.modelCovarianceTable);
 end
 end
 

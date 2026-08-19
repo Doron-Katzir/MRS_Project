@@ -172,6 +172,168 @@ classdef ProjectStatistics
             result.permutationResults = permutationResults;
             result.crlbQualityTable = legacy.groupCRLBQualityTable;
         end
+
+        function result = WishartCovarianceLRT(wishartData, statsCfg)
+            %WishartCovarianceLRT Run the three covariance LRT modes.
+            %
+            % wishartData is the centrally prepared analysisData.wishart
+            % view. Patient, metabolite-panel, and minimum-observation
+            % decisions must be completed by ApplyAnalysisFilters.
+
+            if nargin < 2 || isempty(statsCfg)
+                statsCfg = struct();
+            end
+
+            ProjectStatistics.ValidateWishartData(wishartData);
+            statsCfg = ProjectStatistics.NormalizeWishartConfig(statsCfg);
+
+            legacyInput = struct();
+            legacyInput.kind = "MRSAnalysisData";
+            legacyInput.wishart = wishartData;
+            legacyInput.crlbMajorityTable = wishartData.crlbMajorityTable;
+
+            modeNames = ["modeA", "modeB", "modeC"];
+            selectionModes = [ ...
+                "perPatientLargestValid", "fixed", "largestCommon"];
+            modeDisplayNames = [ ...
+                "Per-patient largest valid subset", ...
+                "Predefined fixed metabolite panel", ...
+                "Largest common valid subset"];
+
+            modes = struct();
+            combinedSummary = table();
+            combinedPatients = table();
+            modeDiagnostics = struct();
+            outputFiles = struct();
+
+            for modeIdx = 1:numel(modeNames)
+                modeName = modeNames(modeIdx);
+                modeField = char(modeName);
+                legacyCfg = struct();
+                legacyCfg.metaboliteSelectionMode = selectionModes(modeIdx);
+                legacyCfg.filterView = modeName;
+                legacyCfg.runOnlyCommonPanelPatients = ...
+                    statsCfg.runOnlyCommonPanelPatients;
+                legacyCfg.minMetabolites = statsCfg.minMetabolites;
+                legacyCfg.alpha = statsCfg.alpha;
+                legacyCfg.applyNumericalRidge = ...
+                    statsCfg.applyNumericalRidge;
+                legacyCfg.ridgeScale = statsCfg.ridgeScale;
+                legacyCfg.maxRidgeSteps = statsCfg.maxRidgeSteps;
+                legacyCfg.exportResults = statsCfg.exportResults;
+                legacyCfg.outputDir = statsCfg.outputDirs.(modeField);
+
+                legacy = TestWishartCovarianceLRT(legacyInput, legacyCfg);
+
+                modeParameters = struct();
+                modeParameters.metaboliteSelectionMode = ...
+                    legacy.options.metaboliteSelectionMode;
+                modeParameters.runOnlyCommonPanelPatients = ...
+                    legacy.options.runOnlyCommonPanelPatients;
+                modeParameters.minMetabolites = legacy.options.minMetabolites;
+                modeParameters.alpha = legacy.options.alpha;
+                modeParameters.applyNumericalRidge = ...
+                    legacy.options.applyNumericalRidge;
+                modeParameters.ridgeScale = legacy.options.ridgeScale;
+                modeParameters.maxRidgeSteps = legacy.options.maxRidgeSteps;
+                modeParameters.exportResults = legacy.options.exportResults;
+                modeParameters.outputDir = string(legacy.options.outputDir);
+
+                diagnostics = struct();
+                diagnostics.patientIDs = legacy.patientIDs;
+                diagnostics.allCandidatePatientIDs = ...
+                    legacy.allCandidatePatientIDs;
+                diagnostics.preparedMetabolites = ...
+                    wishartData.views.(modeField).metabolites;
+                diagnostics.minValidParts = ...
+                    wishartData.views.(modeField).minValidParts;
+                diagnostics.nCandidatePatients = ...
+                    numel(legacy.allCandidatePatientIDs);
+                diagnostics.nPatientsTested = height(legacy.patientSummaryTable);
+                diagnostics.nSuccessfulPatients = sum( ...
+                    legacy.patientSummaryTable.status == "ok");
+                diagnostics.nFailedPatients = sum( ...
+                    legacy.patientSummaryTable.status == "failed");
+                diagnostics.covarianceDimensions = unique( ...
+                    legacy.patientSummaryTable.nMetabolites( ...
+                    legacy.patientSummaryTable.status == "ok"));
+                diagnostics.nEmpiricalRidges = sum( ...
+                    legacy.patientSummaryTable.ridgeEmpirical > 0);
+                diagnostics.nModelRidges = sum( ...
+                    legacy.patientSummaryTable.ridgeModel > 0);
+                diagnostics.nPositiveDefiniteFailures = sum(contains( ...
+                    lower(legacy.patientSummaryTable.errorMessage), ...
+                    "positive definite"));
+                diagnostics.commonPanel = legacy.commonPanel;
+
+                modeFiles = struct( ...
+                    'patientCsv', "", ...
+                    'groupCsv', "", ...
+                    'commonPanelDiscoveryCsv', "", ...
+                    'commonPanelCsv', "");
+                if legacy.options.exportResults
+                    modeFiles.patientCsv = string(fullfile( ...
+                        legacy.options.outputDir, ...
+                        'Wishart_LRT_PerPatient.csv'));
+                    modeFiles.groupCsv = string(fullfile( ...
+                        legacy.options.outputDir, 'Wishart_LRT_Group.csv'));
+                    if ~isempty(legacy.panelDiscoveryTable)
+                        modeFiles.commonPanelDiscoveryCsv = string(fullfile( ...
+                            legacy.options.outputDir, ...
+                            'Wishart_LRT_CommonPanelDiscovery.csv'));
+                    end
+                    if ~isempty(legacy.commonPanel)
+                        modeFiles.commonPanelCsv = string(fullfile( ...
+                            legacy.options.outputDir, ...
+                            'Wishart_LRT_CommonPanel.csv'));
+                    end
+                end
+
+                modeResult = struct();
+                modeResult.name = modeDisplayNames(modeIdx);
+                modeResult.parameters = modeParameters;
+                modeResult.summaryTable = legacy.groupTable;
+                modeResult.patientTable = legacy.patientSummaryTable;
+                modeResult.diagnostics = diagnostics;
+                modeResult.outputFiles = modeFiles;
+                modeResult.patientResultsByID = legacy.patientResultsByID;
+                modeResult.commonPanel = legacy.commonPanel;
+                modeResult.panelDiscoveryTable = legacy.panelDiscoveryTable;
+                modes.(modeField) = modeResult;
+                modeDiagnostics.(modeField) = diagnostics;
+                outputFiles.(modeField) = modeFiles;
+
+                modeSummary = addvars(legacy.groupTable, ...
+                    repmat(modeName, height(legacy.groupTable), 1), ...
+                    'Before', 1, 'NewVariableNames', 'mode');
+                combinedSummary = [combinedSummary; modeSummary]; %#ok<AGROW>
+                modePatients = addvars(legacy.patientSummaryTable, ...
+                    repmat(modeName, height(legacy.patientSummaryTable), 1), ...
+                    'Before', 1, 'NewVariableNames', 'mode');
+                combinedPatients = [combinedPatients; modePatients]; %#ok<AGROW>
+            end
+
+            parameters = statsCfg;
+            parameters.modeOrder = modeNames;
+
+            diagnostics = struct();
+            diagnostics.method = legacy.method;
+            diagnostics.nullHypothesis = legacy.nullHypothesis;
+            diagnostics.testStatistic = legacy.testStatistic;
+            diagnostics.dfDefinition = legacy.dfDefinition;
+            diagnostics.modeOrder = modeNames;
+            diagnostics.modes = modeDiagnostics;
+
+            result = struct();
+            result.name = "Wishart covariance likelihood-ratio test";
+            result.parameters = parameters;
+            result.summaryTable = combinedSummary;
+            result.patientTable = combinedPatients;
+            result.diagnostics = diagnostics;
+            result.outputFiles = outputFiles;
+            result.modes = modes;
+            result.crlbMajorityTable = wishartData.crlbMajorityTable;
+        end
     end
 
     methods (Static, Access = private)
@@ -257,6 +419,75 @@ classdef ProjectStatistics
                     'useFDR must be true.']);
             end
             statsCfg.useFDR = true;
+        end
+
+        function ValidateWishartData(wishartData)
+            if ~isstruct(wishartData) || ~isscalar(wishartData)
+                error('ProjectStatistics:InvalidWishartData', ...
+                    ['wishartData must be a scalar struct from ', ...
+                    'analysisData.wishart.']);
+            end
+
+            requiredFields = { ...
+                'patientIDs', 'views', 'crlbMajorityTable', ...
+                'patientDataByID'};
+            missingFields = requiredFields(~isfield(wishartData, requiredFields));
+            if ~isempty(missingFields)
+                error('ProjectStatistics:InvalidWishartData', ...
+                    'wishartData is missing required field(s): %s.', ...
+                    strjoin(missingFields, ', '));
+            end
+
+            requiredViews = {'modeA', 'modeB', 'modeC'};
+            missingViews = requiredViews(~isfield(wishartData.views, requiredViews));
+            if ~isempty(missingViews)
+                error('ProjectStatistics:InvalidWishartData', ...
+                    'wishartData.views is missing required mode(s): %s.', ...
+                    strjoin(missingViews, ', '));
+            end
+        end
+
+        function statsCfg = NormalizeWishartConfig(statsCfg)
+            if ~isstruct(statsCfg) || ~isscalar(statsCfg)
+                error('ProjectStatistics:InvalidWishartConfig', ...
+                    'statsCfg must be a scalar struct.');
+            end
+
+            statsCfg = ProjectStatistics.SetDefaultField( ...
+                statsCfg, 'minMetabolites', 2);
+            statsCfg = ProjectStatistics.SetDefaultField( ...
+                statsCfg, 'alpha', 0.05);
+            statsCfg = ProjectStatistics.SetDefaultField( ...
+                statsCfg, 'applyNumericalRidge', true);
+            statsCfg = ProjectStatistics.SetDefaultField( ...
+                statsCfg, 'ridgeScale', 1e-8);
+            statsCfg = ProjectStatistics.SetDefaultField( ...
+                statsCfg, 'maxRidgeSteps', 10);
+            statsCfg = ProjectStatistics.SetDefaultField( ...
+                statsCfg, 'runOnlyCommonPanelPatients', true);
+            statsCfg = ProjectStatistics.SetDefaultField( ...
+                statsCfg, 'exportResults', false);
+
+            if ~isfield(statsCfg, 'outputDirs') || ...
+                    ~isstruct(statsCfg.outputDirs) || ...
+                    ~isscalar(statsCfg.outputDirs)
+                statsCfg.outputDirs = struct();
+            end
+            statsCfg.outputDirs = ProjectStatistics.SetDefaultField( ...
+                statsCfg.outputDirs, 'modeA', fullfile( ...
+                pwd, 'WishartLRTResults_ModeA_PerPatientLargestValid'));
+            statsCfg.outputDirs = ProjectStatistics.SetDefaultField( ...
+                statsCfg.outputDirs, 'modeB', fullfile( ...
+                pwd, 'WishartLRTResults_ModeB_PredefinedPanel'));
+            statsCfg.outputDirs = ProjectStatistics.SetDefaultField( ...
+                statsCfg.outputDirs, 'modeC', fullfile( ...
+                pwd, 'WishartLRTResults_ModeC_LargestCommon'));
+        end
+
+        function s = SetDefaultField(s, fieldName, defaultValue)
+            if ~isfield(s, fieldName) || isempty(s.(fieldName))
+                s.(fieldName) = defaultValue;
+            end
         end
     end
 end
