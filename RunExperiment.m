@@ -43,7 +43,7 @@ cfg.load.mode = "allSubfolders";
 cfg.load.coordDir = cfg.paths.coordDir;
 
 %% Check bias
-outputs = Load_subsets_multi_patient_input(cfg);
+% outputs = Load_subsets_multi_patient_input(cfg);
 
 
 %% Check metab covariance
@@ -261,322 +261,129 @@ filterCfg.wishartViews.modeC = struct('metabolites', "all", 'minValidParts', 30)
     covOutputs, deGraafOutputs, filterCfg);
 
 
-%% Configure statistical tests
-
-testCfg = struct();
-
-testCfg.nGroupPermutations = 5000;
-testCfg.rngSeed = 1;
-
-metabs = analysisData.temporal.metabolites;
-
-if isempty(metabs) || all(metabs == "")
-    metabs = string(covOutputs.group.meanCorrTable.Properties.VariableNames);
-end
-
-nMetabs = numel(metabs);
-
-pairA = strings(0, 1);
-pairB = strings(0, 1);
-
-for iMetab = 1:nMetabs
-    for jMetab = iMetab+1:nMetabs
-        pairA(end+1, 1) = metabs(iMetab);
-        pairB(end+1, 1) = metabs(jMetab);
-    end
-end
-
-testCfg.permutationPairs = [pairA, pairB];
-
-testOutputs = TestTemporalMetaboliteCorrelations( ...
-    analysisData, ...
-    testCfg);
-
-if isfield(testOutputs, "circularShiftTable") && ...
-        ~isempty(testOutputs.circularShiftTable)
-
-    S = testOutputs.circularShiftTable;
-
-    if ismember("groupCircularShiftPValue", string(S.Properties.VariableNames))
-
-        p = S.groupCircularShiftPValue;
-        q = nan(size(p));
-
-        valid = ~isnan(p);
-        pValid = p(valid);
-
-        if ~isempty(pValid)
-
-            [pSorted, sortOrder] = sort(pValid, "ascend");
-            m = numel(pSorted);
-
-            qSorted = pSorted .* m ./ (1:m)';
-
-            for k = m-1:-1:1
-                qSorted(k) = min(qSorted(k), qSorted(k+1));
-            end
-
-            qSorted = min(qSorted, 1);
-
-            qValid = nan(size(pValid));
-            qValid(sortOrder) = qSorted;
-
-            q(valid) = qValid;
-        end
-
-        S.qValueCircularShift_FDR = q;
-
-        if ismember("qValueCircularShift_FDR", string(S.Properties.VariableNames))
-            S = sortrows(S, "qValueCircularShift_FDR", "ascend");
-        end
-
-        testOutputs.circularShiftTable = S;
-    end
-end
-
-outputDir = fullfile(pwd, "TemporalCorrelationStats_Simplified_AllPairs");
-
-if ~isfolder(outputDir)
-    mkdir(outputDir);
-end
-
-T = testOutputs.groupFisherTable;
-
-wantedColsMain = [ ...
-    "metaboliteA", ...
-    "metaboliteB", ...
-    "groupMeanR", ...
-    "pValue", ...
-    "qValue_FDR", ...
-    "nPatientsUsed", ...
-    "nPositivePatients", ...
-    "nNegativePatients", ...
-    "signConsistency", ...
-    "CRLB_pair_status", ...
-    "absLCModelCorr"];
-
-availableColsMain = string(T.Properties.VariableNames);
-colsToKeepMain = wantedColsMain(ismember(wantedColsMain, availableColsMain));
-
-T_simple = T(:, colsToKeepMain);
-
-if ismember("qValue_FDR", string(T_simple.Properties.VariableNames))
-    T_simple = sortrows(T_simple, "qValue_FDR", "ascend");
-end
-
-writetable(T_simple, ...
-    fullfile(outputDir, "Main_FisherZ_Results_Simplified.csv"));
-
-if ismember("qValue_FDR", availableColsMain) && ...
-        ismember("CRLB_pair_status", availableColsMain) && ...
-        ismember("signConsistency", availableColsMain)
-
-    T_strong = T( ...
-        T.qValue_FDR < 0.05 & ...
-        T.CRLB_pair_status == "PASS" & ...
-        T.signConsistency >= 0.75, :);
-
-    T_strong = T_strong(:, colsToKeepMain);
-
-    if height(T_strong) > 0 && ...
-            ismember("qValue_FDR", string(T_strong.Properties.VariableNames))
-        T_strong = sortrows(T_strong, "qValue_FDR", "ascend");
-    end
-
-    writetable(T_strong, ...
-        fullfile(outputDir, "Strong_Candidates_q_FDR_CRLB_PASS.csv"));
-end
-
-if ismember("pValue", availableColsMain) && ...
-        ismember("signConsistency", availableColsMain)
-
-    T_exploratory = T( ...
-        T.pValue < 0.05 & ...
-        T.signConsistency >= 0.75, :);
-
-    T_exploratory = T_exploratory(:, colsToKeepMain);
-
-    if height(T_exploratory) > 0 && ...
-            ismember("pValue", string(T_exploratory.Properties.VariableNames))
-        T_exploratory = sortrows(T_exploratory, "pValue", "ascend");
-    end
-
-    writetable(T_exploratory, ...
-        fullfile(outputDir, "Exploratory_Candidates_p_uncorrected.csv"));
-end
-
-if isfield(testOutputs, "circularShiftTable") && ...
-        ~isempty(testOutputs.circularShiftTable)
-
-    S = testOutputs.circularShiftTable;
-
-    wantedColsShift = [ ...
-        "metaboliteA", ...
-        "metaboliteB", ...
-        "observedGroupR", ...
-        "groupCircularShiftPValue", ...
-        "qValueCircularShift_FDR", ...
-        "nPatientsUsed"];
-
-    availableColsShift = string(S.Properties.VariableNames);
-    colsToKeepShift = wantedColsShift(ismember(wantedColsShift, availableColsShift));
-
-    S_simple = S(:, colsToKeepShift);
-
-    if ismember("qValueCircularShift_FDR", string(S_simple.Properties.VariableNames))
-        S_simple = sortrows(S_simple, "qValueCircularShift_FDR", "ascend");
-    elseif ismember("groupCircularShiftPValue", string(S_simple.Properties.VariableNames))
-        S_simple = sortrows(S_simple, "groupCircularShiftPValue", "ascend");
-    end
-
-    writetable(S_simple, ...
-        fullfile(outputDir, "Circular_Shift_All_Pairs_Simplified.csv"));
-end
-
-if isfield(testOutputs, "patientCorrelationTable") && ...
-        ~isempty(testOutputs.patientCorrelationTable)
-
-    P = testOutputs.patientCorrelationTable;
-
-    wantedColsPatient = [ ...
-        "metaboliteA", ...
-        "metaboliteB", ...
-        "patientID", ...
-        "rValue", ...
-        "nValidParts"];
-
-    availableColsPatient = string(P.Properties.VariableNames);
-    colsToKeepPatient = wantedColsPatient(ismember(wantedColsPatient, availableColsPatient));
-
-    P_simple = P(:, colsToKeepPatient);
-
-    writetable(P_simple, ...
-        fullfile(outputDir, "Patient_Level_Correlations_Simplified.csv"));
-end
-
-if isfield(testOutputs, "groupCRLBQualityTable") && ...
-        ~isempty(testOutputs.groupCRLBQualityTable)
-
-    Q = testOutputs.groupCRLBQualityTable;
-
-    wantedColsCRLB = [ ...
-        "metabolite", ...
-        "nCRLBUnder100", ...
-        "nInstances", ...
-        "fractionCRLBUnder100", ...
-        "fails90PercentRule"];
-
-    availableColsCRLB = string(Q.Properties.VariableNames);
-    colsToKeepCRLB = wantedColsCRLB(ismember(wantedColsCRLB, availableColsCRLB));
-
-    Q_simple = Q(:, colsToKeepCRLB);
-
-    if ismember("fractionCRLBUnder100", string(Q_simple.Properties.VariableNames))
-        Q_simple = sortrows(Q_simple, "fractionCRLBUnder100", "ascend");
-    end
-
-    writetable(Q_simple, ...
-        fullfile(outputDir, "CRLB_Reliability_Simplified.csv"));
-end
-
-fprintf("\nFinished temporal correlation tests.\n");
-fprintf("Number of metabolite pairs tested with Fisher-z: %d\n", height(testOutputs.groupFisherTable));
-
-if isfield(testOutputs, "circularShiftTable") && ...
-        ~isempty(testOutputs.circularShiftTable)
-    fprintf("Number of metabolite pairs tested with circular shift: %d\n", height(testOutputs.circularShiftTable));
-end
-
-fprintf("Saved simplified CSV files to:\n%s\n", outputDir);
-
-
-
-%% Wishart / covariance LRT examples
-% Put one of these blocks in RunExperiment.m after:
-%   covOutputs = MetabCovarianceByPatient(cfg);
-%   deGraafOutputs = DeGraafAmplitudeCorrelationByPatient(cfg);
-
-% Shared settings
-baseLrtCfg = struct();
-baseLrtCfg.minMetabolites = 2;
-baseLrtCfg.alpha = 0.05;
-baseLrtCfg.applyNumericalRidge = true;
-baseLrtCfg.ridgeScale = 1e-8;
-baseLrtCfg.exportResults = true;
+%% ================= STATISTICAL TEST CONFIGURATION =================
+
+statsCfg = struct();
+statsCfg.pairwise = struct();
+statsCfg.temporal = struct();
+statsCfg.wishart = struct();
+resultsCfg = struct();
+resultsCfg.temporal = struct();
+exportCfg = struct();
+exportCfg.temporal = struct();
+
+% Pairwise one-sample t-test significance threshold. Benjamini-Hochberg
+% FDR correction remains enabled by the validated implementation.
+statsCfg.pairwise.alpha = 0.05;
+statsCfg.pairwise.useFDR = true;
+
+% Preserve the existing pairwise exports and output location.
+statsCfg.pairwise.exportResults = true;
+statsCfg.pairwise.outputDir = fullfile( ...
+    pwd, "PairwiseEmpiricalVsModelResults");
+
+% Wishart covariance LRT mathematical and reporting parameters. Patient and
+% metabolite-panel eligibility remains in filterCfg.wishartViews.
+statsCfg.wishart.minMetabolites = 2;
+statsCfg.wishart.alpha = 0.05;
+statsCfg.wishart.applyNumericalRidge = true;
+statsCfg.wishart.ridgeScale = 1e-8;
+statsCfg.wishart.maxRidgeSteps = 10;
+statsCfg.wishart.runOnlyCommonPanelPatients = true;
+statsCfg.wishart.exportResults = true;
+statsCfg.wishart.outputDirs = struct();
+statsCfg.wishart.outputDirs.modeA = fullfile( ...
+    pwd, "WishartLRTResults_ModeA_PerPatientLargestValid");
+statsCfg.wishart.outputDirs.modeB = fullfile( ...
+    pwd, "WishartLRTResults_ModeB_PredefinedPanel");
+statsCfg.wishart.outputDirs.modeC = fullfile( ...
+    pwd, "WishartLRTResults_ModeC_LargestCommon");
+
+
+%% Configure temporal statistical tests
+
+statsCfg.temporal.doFisherGroupTest = true;
+statsCfg.temporal.doCircularShiftPermutation = true;
+statsCfg.temporal.nGroupPermutations = 5000;
+statsCfg.temporal.rngSeed = 1;
+statsCfg.temporal.useFDR = true;
+statsCfg.temporal.exportTables = true;
+statsCfg.temporal.outputDir = fullfile(pwd, "TemporalCorrelationStats");
+statsCfg.temporal.permutationPairs = "all";
+
+% Temporal scientific interpretation policies.
+resultsCfg.temporal.strong.maxQValue = 0.05;
+resultsCfg.temporal.strong.requireCRLBPass = true;
+resultsCfg.temporal.strong.minSignConsistency = 0.75;
+resultsCfg.temporal.exploratory.maxPValue = 0.05;
+resultsCfg.temporal.exploratory.minSignConsistency = 0.75;
+
+% Additional simplified temporal reports. Core statistical exports remain
+% controlled by statsCfg.temporal for now.
+exportCfg.temporal.writeSimplifiedTables = true;
+exportCfg.temporal.outputDir = fullfile( ...
+    pwd, "TemporalCorrelationStats_Simplified_AllPairs");
+exportCfg.temporal.printSummary = true;
+
+temporal = ProjectStatistics.TemporalCorrelation( ...
+    analysisData.temporal, statsCfg.temporal);
+
+temporalResults = ProjectResults.Temporal( ...
+    temporal, resultsCfg.temporal);
+
+temporalExports = ProjectExports.Temporal( ...
+    temporal, temporalResults, exportCfg.temporal);
+
+
+
+%% Wishart covariance LRT
+
+wishart = ProjectStatistics.WishartCovarianceLRT( ...
+    analysisData.wishart, statsCfg.wishart);
 
 %% Mode A: per-patient largest valid subset
 % Each patient gets the largest valid non-sum metabolite subset available for that patient.
-lrtCfg = baseLrtCfg;
-lrtCfg.metaboliteSelectionMode = "perPatientLargestValid";  % aliases: "perPatient" or "a"
-lrtCfg.filterView = "modeA";
-lrtCfg.outputDir = fullfile(pwd, "WishartLRTResults_ModeA_PerPatientLargestValid");
-
-lrtOutputs_ModeA = TestWishartCovarianceLRT(analysisData, lrtCfg);
-
 disp("Mode A: per-patient largest valid subset")
-disp(lrtOutputs_ModeA.patientSummaryTable)
-disp(lrtOutputs_ModeA.groupTable)
+disp(wishart.modes.modeA.patientTable)
+disp(wishart.modes.modeA.summaryTable)
 
 %% Mode B: predefined fixed metabolite panel
 % The exact same predefined metabolite panel is requested for every patient.
-lrtCfg = baseLrtCfg;
-lrtCfg.metaboliteSelectionMode = "fixed";  % aliases: "predefined" or "b"
-lrtCfg.filterView = "modeB";
-lrtCfg.outputDir = fullfile(pwd, "WishartLRTResults_ModeB_PredefinedPanel");
-
-lrtOutputs_ModeB = TestWishartCovarianceLRT(analysisData, lrtCfg);
-
 disp("Mode B: predefined fixed metabolite panel")
 disp("Fixed panel used:")
-disp(analysisData.wishart.views.modeB.metabolites')
-disp(lrtOutputs_ModeB.patientSummaryTable)
-disp(lrtOutputs_ModeB.groupTable)
+disp(wishart.modes.modeB.diagnostics.preparedMetabolites')
+disp(wishart.modes.modeB.patientTable)
+disp(wishart.modes.modeB.summaryTable)
 
 %% Mode C: largest common valid subset
 % First find the largest valid panel for each patient, then take the common
 % intersection, then run the LRT using that same common panel for every eligible patient.
-lrtCfg = baseLrtCfg;
-lrtCfg.metaboliteSelectionMode = "largestCommon";  % aliases: "common" or "c"
-lrtCfg.filterView = "modeC";
-lrtCfg.runOnlyCommonPanelPatients = true;
-lrtCfg.outputDir = fullfile(pwd, "WishartLRTResults_ModeC_LargestCommon");
-
-lrtOutputs_ModeC = TestWishartCovarianceLRT(analysisData, lrtCfg);
-
 disp("Mode C: largest common valid subset")
 disp("Common panel used:")
-disp(lrtOutputs_ModeC.commonPanel')
-disp(lrtOutputs_ModeC.panelDiscoveryTable)
-disp(lrtOutputs_ModeC.patientSummaryTable)
-disp(lrtOutputs_ModeC.groupTable)
+disp(wishart.modes.modeC.commonPanel')
+disp(wishart.modes.modeC.panelDiscoveryTable)
+disp(wishart.modes.modeC.patientTable)
+disp(wishart.modes.modeC.summaryTable)
 
 
 %% Pairwise empirical-vs-LCModel/de Graaf correlation test
 % Option A: one-sample t-test across patients on Fisher-z differences
 
-pairCfg = struct();
-
-% Significance threshold.
-pairCfg.alpha = 0.05;
-
-% Export results.
-pairCfg.exportResults = true;
-pairCfg.outputDir = fullfile(pwd, "PairwiseEmpiricalVsModelResults");
-
 % Run test.
-pairOutputs = TestPairwiseEmpiricalVsModelCorrelation(analysisData, pairCfg);
+pairwise = ProjectStatistics.PairwiseEmpiricalVsModel( ...
+    analysisData.pairwise, statsCfg.pairwise);
 
 %% Display results
 
 disp("Pairwise empirical-vs-LCModel/deGraaf summary:")
-disp(pairOutputs.pairSummaryTable)
+disp(pairwise.summaryTable)
 
 disp("Patient-level pairwise results:")
-disp(pairOutputs.patientPairTable)
+disp(pairwise.patientTable)
 
 %% Show only FDR-significant pairs
 
-sigPairs = pairOutputs.pairSummaryTable(pairOutputs.pairSummaryTable.rejectH0_FDR == true, :);
+sigPairs = pairwise.summaryTable(pairwise.summaryTable.rejectH0_FDR == true, :);
 
 disp("FDR-significant empirical-vs-model pairs:")
 disp(sigPairs)

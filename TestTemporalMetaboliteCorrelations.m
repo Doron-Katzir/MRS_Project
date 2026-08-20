@@ -737,6 +737,26 @@ function [covOutputs, modelOutputs] = ExtractCanonicalOutputs(analysisData)
 covOutputs = struct();
 covOutputs.patientResultsByID = struct();
 covOutputs.metabList = analysisData.temporal.metabolites;
+
+% The focused temporal view carries the three group tables used for the
+% descriptive empirical-vs-model columns. This compatibility path lets the
+% public facade delegate without receiving the complete analysis envelope.
+focusedFields = {'empiricalMeanAbsCorrTable', ...
+    'modelMeanAmplitudeCorrTable', 'modelMeanAbsAmplitudeCorrTable'};
+if all(isfield(analysisData.temporal, focusedFields))
+    covOutputs.group = struct();
+    covOutputs.group.meanAbsCorrTable = ...
+        analysisData.temporal.empiricalMeanAbsCorrTable;
+    modelOutputs = struct();
+    modelOutputs.patientResultsByID = struct();
+    modelOutputs.group = struct();
+    modelOutputs.group.meanAmplitudeCorrTable = ...
+        analysisData.temporal.modelMeanAmplitudeCorrTable;
+    modelOutputs.group.meanAbsAmplitudeCorrTable = ...
+        analysisData.temporal.modelMeanAbsAmplitudeCorrTable;
+    return;
+end
+
 covOutputs.settings.division = analysisData.division;
 covOutputs.group = analysisData.empiricalGroup;
 modelOutputs = struct();

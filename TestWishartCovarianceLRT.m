@@ -885,6 +885,20 @@ covOutputs.patientResultsByID = struct();
 modelOutputs = struct();
 modelOutputs.patientResultsByID = struct();
 
+% The public facade supplies the focused analysisData.wishart view. It holds
+% only the empirical part table and model covariance table required by this
+% implementation; the complete canonical patient state remains unnecessary.
+if isfield(analysisData.wishart, 'patientDataByID')
+    for p = 1:numel(analysisData.wishart.patientIDs)
+        field = char(analysisData.wishart.patientIDs(p));
+        entry = analysisData.wishart.patientDataByID.(field);
+        covOutputs.patientResultsByID.(field).partTable = entry.partTable;
+        modelOutputs.patientResultsByID.(field).meanAmplitudeCovTable = ...
+            entry.modelCovarianceTable;
+    end
+    return;
+end
+
 for p = 1:numel(analysisData.patientIDs)
     field = char(analysisData.patientIDs(p));
     entry = analysisData.patientDataByID.(field);

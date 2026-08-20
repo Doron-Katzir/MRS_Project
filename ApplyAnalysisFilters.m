@@ -86,10 +86,21 @@ analysisData.temporal.crlbThreshold = opts.temporalCRLBThreshold;
 analysisData.temporal.requiredGoodFraction = opts.temporalRequiredGoodFraction;
 analysisData.temporal.crlbQualityTable = temporalCRLBQualityTable;
 analysisData.temporal.circularShiftPrepared = opts.prepareTemporalCircularShift;
+% Focused group summaries used only for the temporal result's descriptive
+% empirical-vs-model columns. Raw patient/project state stays outside this view.
+analysisData.temporal.empiricalMeanAbsCorrTable = ...
+    analysisData.empiricalGroup.meanAbsCorrTable;
+analysisData.temporal.modelMeanAmplitudeCorrTable = GetOptionalField( ...
+    analysisData.modelGroup, 'meanAmplitudeCorrTable', table());
+analysisData.temporal.modelMeanAbsAmplitudeCorrTable = GetOptionalField( ...
+    analysisData.modelGroup, 'meanAbsAmplitudeCorrTable', table());
 
 analysisData.wishart = struct();
 analysisData.wishart.patientIDs = patientIDs;
 analysisData.wishart.views = wishartViews;
+analysisData.wishart.crlbMajorityTable = crlbMajorityTable;
+analysisData.wishart.patientDataByID = BuildFocusedWishartPatientData( ...
+    patientDataByID, patientIDs);
 
 analysisData.crlbMajorityTable = crlbMajorityTable;
 
@@ -364,6 +375,17 @@ for k = 1:numel(names)
     view.metaboliteDecisions = decisions;
     view.minValidParts = double(GetOption(cfg, 'minValidParts', opts.wishartMinValidParts));
     views.(name) = view;
+end
+end
+
+function focusedDataByID = BuildFocusedWishartPatientData(dataByID, patientIDs)
+focusedDataByID = struct();
+for p = 1:numel(patientIDs)
+    field = char(patientIDs(p));
+    source = dataByID.(field);
+    focusedDataByID.(field) = struct( ...
+        'partTable', source.partTable, ...
+        'modelCovarianceTable', source.modelCovarianceTable);
 end
 end
 
