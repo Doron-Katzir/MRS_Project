@@ -267,6 +267,10 @@ statsCfg = struct();
 statsCfg.pairwise = struct();
 statsCfg.temporal = struct();
 statsCfg.wishart = struct();
+resultsCfg = struct();
+resultsCfg.temporal = struct();
+exportCfg = struct();
+exportCfg.temporal = struct();
 
 % Pairwise one-sample t-test significance threshold. Benjamini-Hochberg
 % FDR correction remains enabled by the validated implementation.
@@ -305,221 +309,30 @@ statsCfg.temporal.rngSeed = 1;
 statsCfg.temporal.useFDR = true;
 statsCfg.temporal.exportTables = true;
 statsCfg.temporal.outputDir = fullfile(pwd, "TemporalCorrelationStats");
+statsCfg.temporal.permutationPairs = "all";
 
-metabs = analysisData.temporal.metabolites;
+% Temporal scientific interpretation policies.
+resultsCfg.temporal.strong.maxQValue = 0.05;
+resultsCfg.temporal.strong.requireCRLBPass = true;
+resultsCfg.temporal.strong.minSignConsistency = 0.75;
+resultsCfg.temporal.exploratory.maxPValue = 0.05;
+resultsCfg.temporal.exploratory.minSignConsistency = 0.75;
 
-if isempty(metabs) || all(metabs == "")
-    metabs = string(covOutputs.group.meanCorrTable.Properties.VariableNames);
-end
-
-nMetabs = numel(metabs);
-
-pairA = strings(0, 1);
-pairB = strings(0, 1);
-
-for iMetab = 1:nMetabs
-    for jMetab = iMetab+1:nMetabs
-        pairA(end+1, 1) = metabs(iMetab);
-        pairB(end+1, 1) = metabs(jMetab);
-    end
-end
-
-statsCfg.temporal.permutationPairs = [pairA, pairB];
+% Additional simplified temporal reports. Core statistical exports remain
+% controlled by statsCfg.temporal for now.
+exportCfg.temporal.writeSimplifiedTables = true;
+exportCfg.temporal.outputDir = fullfile( ...
+    pwd, "TemporalCorrelationStats_Simplified_AllPairs");
+exportCfg.temporal.printSummary = true;
 
 temporal = ProjectStatistics.TemporalCorrelation( ...
     analysisData.temporal, statsCfg.temporal);
 
-if ~isempty(temporal.permutationResults)
+temporalResults = ProjectResults.Temporal( ...
+    temporal, resultsCfg.temporal);
 
-    S = temporal.permutationResults;
-
-    if ismember("groupCircularShiftPValue", string(S.Properties.VariableNames))
-
-        p = S.groupCircularShiftPValue;
-        q = nan(size(p));
-
-        valid = ~isnan(p);
-        pValid = p(valid);
-
-        if ~isempty(pValid)
-
-            [pSorted, sortOrder] = sort(pValid, "ascend");
-            m = numel(pSorted);
-
-            qSorted = pSorted .* m ./ (1:m)';
-
-            for k = m-1:-1:1
-                qSorted(k) = min(qSorted(k), qSorted(k+1));
-            end
-
-            qSorted = min(qSorted, 1);
-
-            qValid = nan(size(pValid));
-            qValid(sortOrder) = qSorted;
-
-            q(valid) = qValid;
-        end
-
-        S.qValueCircularShift_FDR = q;
-
-        if ismember("qValueCircularShift_FDR", string(S.Properties.VariableNames))
-            S = sortrows(S, "qValueCircularShift_FDR", "ascend");
-        end
-
-        temporal.permutationResults = S;
-    end
-end
-
-outputDir = fullfile(pwd, "TemporalCorrelationStats_Simplified_AllPairs");
-
-if ~isfolder(outputDir)
-    mkdir(outputDir);
-end
-
-T = temporal.summaryTable;
-
-wantedColsMain = [ ...
-    "metaboliteA", ...
-    "metaboliteB", ...
-    "groupMeanR", ...
-    "pValue", ...
-    "qValue_FDR", ...
-    "nPatientsUsed", ...
-    "nPositivePatients", ...
-    "nNegativePatients", ...
-    "signConsistency", ...
-    "CRLB_pair_status", ...
-    "absLCModelCorr"];
-
-availableColsMain = string(T.Properties.VariableNames);
-colsToKeepMain = wantedColsMain(ismember(wantedColsMain, availableColsMain));
-
-T_simple = T(:, colsToKeepMain);
-
-if ismember("qValue_FDR", string(T_simple.Properties.VariableNames))
-    T_simple = sortrows(T_simple, "qValue_FDR", "ascend");
-end
-
-writetable(T_simple, ...
-    fullfile(outputDir, "Main_FisherZ_Results_Simplified.csv"));
-
-if ismember("qValue_FDR", availableColsMain) && ...
-        ismember("CRLB_pair_status", availableColsMain) && ...
-        ismember("signConsistency", availableColsMain)
-
-    T_strong = T( ...
-        T.qValue_FDR < 0.05 & ...
-        T.CRLB_pair_status == "PASS" & ...
-        T.signConsistency >= 0.75, :);
-
-    T_strong = T_strong(:, colsToKeepMain);
-
-    if height(T_strong) > 0 && ...
-            ismember("qValue_FDR", string(T_strong.Properties.VariableNames))
-        T_strong = sortrows(T_strong, "qValue_FDR", "ascend");
-    end
-
-    writetable(T_strong, ...
-        fullfile(outputDir, "Strong_Candidates_q_FDR_CRLB_PASS.csv"));
-end
-
-if ismember("pValue", availableColsMain) && ...
-        ismember("signConsistency", availableColsMain)
-
-    T_exploratory = T( ...
-        T.pValue < 0.05 & ...
-        T.signConsistency >= 0.75, :);
-
-    T_exploratory = T_exploratory(:, colsToKeepMain);
-
-    if height(T_exploratory) > 0 && ...
-            ismember("pValue", string(T_exploratory.Properties.VariableNames))
-        T_exploratory = sortrows(T_exploratory, "pValue", "ascend");
-    end
-
-    writetable(T_exploratory, ...
-        fullfile(outputDir, "Exploratory_Candidates_p_uncorrected.csv"));
-end
-
-if ~isempty(temporal.permutationResults)
-
-    S = temporal.permutationResults;
-
-    wantedColsShift = [ ...
-        "metaboliteA", ...
-        "metaboliteB", ...
-        "observedGroupR", ...
-        "groupCircularShiftPValue", ...
-        "qValueCircularShift_FDR", ...
-        "nPatientsUsed"];
-
-    availableColsShift = string(S.Properties.VariableNames);
-    colsToKeepShift = wantedColsShift(ismember(wantedColsShift, availableColsShift));
-
-    S_simple = S(:, colsToKeepShift);
-
-    if ismember("qValueCircularShift_FDR", string(S_simple.Properties.VariableNames))
-        S_simple = sortrows(S_simple, "qValueCircularShift_FDR", "ascend");
-    elseif ismember("groupCircularShiftPValue", string(S_simple.Properties.VariableNames))
-        S_simple = sortrows(S_simple, "groupCircularShiftPValue", "ascend");
-    end
-
-    writetable(S_simple, ...
-        fullfile(outputDir, "Circular_Shift_All_Pairs_Simplified.csv"));
-end
-
-if ~isempty(temporal.patientTable)
-
-    P = temporal.patientTable;
-
-    wantedColsPatient = [ ...
-        "metaboliteA", ...
-        "metaboliteB", ...
-        "patientID", ...
-        "rValue", ...
-        "nValidParts"];
-
-    availableColsPatient = string(P.Properties.VariableNames);
-    colsToKeepPatient = wantedColsPatient(ismember(wantedColsPatient, availableColsPatient));
-
-    P_simple = P(:, colsToKeepPatient);
-
-    writetable(P_simple, ...
-        fullfile(outputDir, "Patient_Level_Correlations_Simplified.csv"));
-end
-
-if ~isempty(temporal.crlbQualityTable)
-
-    Q = temporal.crlbQualityTable;
-
-    wantedColsCRLB = [ ...
-        "metabolite", ...
-        "nCRLBUnder100", ...
-        "nInstances", ...
-        "fractionCRLBUnder100", ...
-        "fails90PercentRule"];
-
-    availableColsCRLB = string(Q.Properties.VariableNames);
-    colsToKeepCRLB = wantedColsCRLB(ismember(wantedColsCRLB, availableColsCRLB));
-
-    Q_simple = Q(:, colsToKeepCRLB);
-
-    if ismember("fractionCRLBUnder100", string(Q_simple.Properties.VariableNames))
-        Q_simple = sortrows(Q_simple, "fractionCRLBUnder100", "ascend");
-    end
-
-    writetable(Q_simple, ...
-        fullfile(outputDir, "CRLB_Reliability_Simplified.csv"));
-end
-
-fprintf("\nFinished temporal correlation tests.\n");
-fprintf("Number of metabolite pairs tested with Fisher-z: %d\n", height(temporal.summaryTable));
-
-if ~isempty(temporal.permutationResults)
-    fprintf("Number of metabolite pairs tested with circular shift: %d\n", height(temporal.permutationResults));
-end
-
-fprintf("Saved simplified CSV files to:\n%s\n", outputDir);
+temporalExports = ProjectExports.Temporal( ...
+    temporal, temporalResults, exportCfg.temporal);
 
 
 

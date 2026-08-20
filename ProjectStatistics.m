@@ -78,6 +78,8 @@ classdef ProjectStatistics
 
             ProjectStatistics.ValidateTemporalData(temporalData);
             statsCfg = ProjectStatistics.NormalizeTemporalConfig(statsCfg);
+            statsCfg = ProjectStatistics.ResolveTemporalPermutationPairs( ...
+                temporalData, statsCfg);
 
             % Keep TestTemporalMetaboliteCorrelations authoritative. Its
             % centralized-input adapter accepts this focused view inside the
@@ -397,6 +399,13 @@ classdef ProjectStatistics
                     'temporalData is missing required field(s): %s.', ...
                     strjoin(missingFields, ', '));
             end
+
+            metabolites = string(temporalData.metabolites(:));
+            if isempty(metabolites) || any(strlength(metabolites) == 0)
+                error('ProjectStatistics:InvalidTemporalData', ...
+                    ['temporalData.metabolites must contain the nonempty ', ...
+                    'metabolite list prepared by ApplyAnalysisFilters.']);
+            end
         end
 
         function statsCfg = NormalizeTemporalConfig(statsCfg)
@@ -419,6 +428,61 @@ classdef ProjectStatistics
                     'useFDR must be true.']);
             end
             statsCfg.useFDR = true;
+        end
+
+        function statsCfg = ResolveTemporalPermutationPairs(temporalData, statsCfg)
+            if ~isfield(statsCfg, 'permutationPairs') || ...
+                    isempty(statsCfg.permutationPairs)
+                return;
+            end
+
+            pairSelection = string(statsCfg.permutationPairs);
+            if ~(isscalar(pairSelection) && strcmpi(pairSelection, "all"))
+                return;
+            end
+
+            pairTable = temporalData.pairTable;
+            if ~istable(pairTable)
+                error('ProjectStatistics:InvalidTemporalData', ...
+                    'temporalData.pairTable must be a table.');
+            end
+            requiredColumns = {'metaboliteA', 'metaboliteB'};
+            missingColumns = requiredColumns(~ismember( ...
+                requiredColumns, pairTable.Properties.VariableNames));
+            if ~isempty(missingColumns)
+                error('ProjectStatistics:InvalidTemporalData', ...
+                    ['temporalData.pairTable is missing required ', ...
+                    'column(s): %s.'], strjoin(missingColumns, ', '));
+            end
+
+            pairA = string(pairTable.metaboliteA(:));
+            pairB = string(pairTable.metaboliteB(:));
+            if isempty(pairA) || any(strlength(pairA) == 0) || ...
+                    any(strlength(pairB) == 0)
+                error('ProjectStatistics:InvalidTemporalData', ...
+                    ['temporalData.pairTable must contain nonempty ', ...
+                    'canonical temporal pairs.']);
+            end
+            if any(pairA == pairB)
+                error('ProjectStatistics:InvalidTemporalData', ...
+                    'temporalData.pairTable contains a self-pair.');
+            end
+            metabolites = string(temporalData.metabolites(:));
+            if any(~ismember(pairA, metabolites)) || ...
+                    any(~ismember(pairB, metabolites))
+                error('ProjectStatistics:InvalidTemporalData', ...
+                    ['temporalData.pairTable contains a metabolite outside ', ...
+                    'temporalData.metabolites.']);
+            end
+
+            canonicalPairs = sort([pairA, pairB], 2);
+            if size(unique(canonicalPairs, 'rows', 'stable'), 1) ~= ...
+                    size(canonicalPairs, 1)
+                error('ProjectStatistics:InvalidTemporalData', ...
+                    'temporalData.pairTable contains duplicate pairs.');
+            end
+
+            statsCfg.permutationPairs = [pairA, pairB];
         end
 
         function ValidateWishartData(wishartData)
