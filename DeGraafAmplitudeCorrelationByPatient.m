@@ -1,22 +1,18 @@
 function outputs = DeGraafAmplitudeCorrelationByPatient(cfg, varargin)
 % DeGraafAmplitudeCorrelationByPatient
 %
-% Parse LCModel .print files to extract the De Graaf / LCModel amplitude
-% correlation matrix.
+% Build De Graaf-style amplitude covariance and correlation matrices from
+% fitted LCModel spectral basis functions.
 %
 % For each patient:
-%   - find Division_1 part .print files
-%   - parse LCModel "Correlation coefficients"
+%   - find Division_1 part .coord files
+%   - load the patient's Division_36_part_1 fitted baseline
+%   - append that baseline to each part's fitted spectral basis
+%   - invert the complete basis-overlap information matrix
+%   - remove the baseline parameter after inversion
 %   - parse matching .coord concentration and %SD / CRLB table
 %   - mask invalid metabolites
 %   - average part-level amplitude correlation matrices
-%   - derive amplitude covariance matrices from CRLB:
-%
-%       Cov_ij = rho_ij * SD_i * SD_j
-%
-% where:
-%
-%       SD_i = concentration_i * CRLB_i / 100
 %
 % Main outputs:
 %
@@ -71,6 +67,12 @@ function outputs = DeGraafAmplitudeCorrelationByPatient(cfg, varargin)
             filePrefix = "";
         end
 
+        baselineCoordFile = FindDivisionCoordFile( ...
+            coordDir, filePrefix, 36, 1);
+        [~, baselineFitData] = VDIIO.ReadLCMCoord(baselineCoordFile);
+        [baselineAxis, baselineVector] = ExtractDivisionBaseline( ...
+            baselineFitData, baselineCoordFile);
+
         printFiles = FindDivisionPrintFiles( ...
             coordDir, ...
             filePrefix, ...
@@ -117,16 +119,15 @@ function outputs = DeGraafAmplitudeCorrelationByPatient(cfg, varargin)
             partNumber = ParsePartNumberFromFilename(printFile);
 
             try
-                [fullCorrMatrix, fullNames] = ParseLCModelPrintCorrelation(printFile);
-
                 coordCRLBTable = ParseLCModelCoordCRLB(coordFile);
 
                 [corrMatrix, covMatrix, concVec, crlbVec, sdVec] = ...
-                    BuildFilteredAmplitudeMatrices( ...
-                        fullCorrMatrix, ...
-                        fullNames, ...
+                    BuildBasisOverlapAmplitudeMatrices( ...
+                        coordFile, ...
                         coordCRLBTable, ...
                         metabList, ...
+                        baselineAxis, ...
+                        baselineVector, ...
                         opts.maskInvalidCRLB, ...
                         opts.invalidCRLBValue);
 
@@ -629,6 +630,65 @@ function printFiles = FindDivisionPrintFiles(coordDir, filePrefix, divisionNumbe
 end
 
 
+function coordFile = FindDivisionCoordFile(coordDir, filePrefix, divisionNumber, partNumber)
+
+    coordDir = string(coordDir);
+    filePrefix = string(filePrefix);
+
+    candidateNames = [ ...
+        filePrefix + "Division_" + string(divisionNumber) + ...
+            "_part_" + string(partNumber) + ".basis.coord", ...
+        filePrefix + "Division_" + string(divisionNumber) + ...
+            "_" + string(partNumber) + ".basis.coord"];
+
+    found = strings(0, 1);
+
+    for k = 1:numel(candidateNames)
+        candidate = string(fullfile(coordDir, candidateNames(k)));
+        if isfile(candidate)
+            found(end+1, 1) = candidate; %#ok<AGROW>
+        end
+    end
+
+    found = unique(found, 'stable');
+
+    if numel(found) ~= 1
+        error(['Expected exactly one Division_%d part %d .coord file in %s ' ...
+            'with prefix "%s"; found %d.'], ...
+            divisionNumber, partNumber, coordDir, filePrefix, numel(found));
+    end
+
+    coordFile = found(1);
+end
+
+
+function [axisPPM, baseline] = ExtractDivisionBaseline(fitData, coordFile)
+
+    if ~isstruct(fitData) || ~isscalar(fitData) || ...
+            ~isfield(fitData, 'axis') || ~isfield(fitData, 'baseline')
+        error('Could not read an LCModel axis and baseline from: %s', coordFile);
+    end
+
+    axisPPM = double(fitData.axis(:));
+    baseline = double(fitData.baseline(:));
+
+    if isempty(axisPPM) || numel(axisPPM) ~= numel(baseline)
+        error('Division-36 baseline and ppm axis sizes do not match in: %s', coordFile);
+    end
+
+    if ~isreal(baseline) || any(~isfinite(baseline)) || ...
+            any(~isfinite(axisPPM)) || norm(baseline) == 0
+        error('Division-36 baseline is not a finite, nonzero real spectrum in: %s', ...
+            coordFile);
+    end
+
+    axisSteps = diff(axisPPM);
+    if ~(all(axisSteps > 0) || all(axisSteps < 0))
+        error('Division-36 ppm axis is not strictly ordered in: %s', coordFile);
+    end
+end
+
+
 function partNumber = ParsePartNumberFromFilename(fileName)
 
     fileName = string(fileName);
@@ -835,33 +895,123 @@ end
 
 
 function [corrMatrix, covMatrix, concVec, crlbVec, sdVec] = ...
-    BuildFilteredAmplitudeMatrices(fullCorrMatrix, fullNames, coordCRLBTable, metabList, ...
-    maskInvalidCRLB, invalidCRLBValue)
+    BuildBasisOverlapAmplitudeMatrices(coordFile, coordCRLBTable, metabList, ...
+    baselineAxis, baselineVector, maskInvalidCRLB, invalidCRLBValue)
 
-    fullNames = string(fullNames(:));
+    [~, fitData] = VDIIO.ReadLCMCoord(coordFile);
+
+    if ~isstruct(fitData) || ~isscalar(fitData) || ...
+            ~isfield(fitData, 'axis') || ~isfield(fitData, 'basisData') || ...
+            ~isfield(fitData, 'basisMetName')
+        error('Could not read fitted LCModel basis spectra from: %s', coordFile);
+    end
+
+    partAxis = double(fitData.axis(:));
+    basisData = double(fitData.basisData);
+    basisNames = string(fitData.basisMetName(:));
+    baselineAxis = double(baselineAxis(:));
+    baselineVector = double(baselineVector(:));
+
+    if size(basisData, 1) ~= numel(partAxis) || ...
+            size(basisData, 2) ~= numel(basisNames)
+        error('Fitted basis dimensions do not match their ppm axis or names in: %s', ...
+            coordFile);
+    end
+
+    if numel(partAxis) ~= numel(baselineAxis) || ...
+            ~isequal(partAxis, baselineAxis)
+        error(['Division-36 baseline grid does not exactly match the fitted ' ...
+            'metabolite basis grid in: %s'], coordFile);
+    end
+
+    if ~isreal(basisData) || ~isreal(baselineVector)
+        error('Baseline and fitted basis must use the same real spectral representation: %s', ...
+            coordFile);
+    end
+
+    if isempty(basisData) || any(~isfinite(basisData), 'all') || ...
+            any(~isfinite(baselineVector))
+        error('Fitted basis or Division-36 baseline contains invalid values: %s', ...
+            coordFile);
+    end
+
+    if numel(unique(basisNames)) ~= numel(basisNames)
+        error('Fitted basis contains duplicate metabolite names: %s', coordFile);
+    end
+
+    % EstimateCovarianceMatrix uses raw fitted .coord spectra without column
+    % normalization. Keep that convention for the Division-36 baseline. Its
+    % nonzero scalar scale does not change the marginalized metabolite block.
+    augmentedBasis = [basisData, baselineVector];
+    augmentedNames = [basisNames; "Division36Baseline"];
+
+    [~, fullCovariance] = VDILCM.EstimateCovarianceMatrix( ...
+        'basisMatrix', augmentedBasis, ...
+        'metabNames', augmentedNames);
+
+    nBasis = numel(basisNames);
+
+    if ~isequal(size(fullCovariance), [nBasis + 1, nBasis + 1]) || ...
+            any(~isfinite(fullCovariance), 'all')
+        error('Augmented basis covariance is invalid for: %s', coordFile);
+    end
+
+    % Remove the Division-36 nuisance parameter only after the full inverse.
+    componentScaleCov = fullCovariance(1:nBasis, 1:nBasis);
+
     metabList = string(metabList(:));
+    analysisComponentNames = strings(0, 1);
+    for m = 1:numel(metabList)
+        analysisComponentNames = [analysisComponentNames; ...
+            split(metabList(m), "+")]; %#ok<AGROW>
+    end
+    analysisComponentNames = unique(analysisComponentNames);
+    componentConc = ones(nBasis, 1);
+    coordNames = string(coordCRLBTable.name);
+
+    for b = 1:nBasis
+        if ismember(basisNames(b), analysisComponentNames)
+            idxCoord = find(strcmp(coordNames, basisNames(b)), 1, 'first');
+            if isempty(idxCoord) || ...
+                    ~isfinite(coordCRLBTable.concentration(idxCoord)) || ...
+                    coordCRLBTable.concentration(idxCoord) <= 0
+                error(['Missing positive fitted concentration for analysis ' ...
+                    'basis component %s in: %s'], basisNames(b), coordFile);
+            end
+            componentConc(b) = coordCRLBTable.concentration(idxCoord);
+        end
+    end
+
+    % Exported component spectra include their fitted amplitudes. Transform
+    % scale-factor covariance back to concentration-amplitude covariance.
+    componentCov = componentScaleCov .* ...
+        (componentConc * componentConc.');
 
     nMetabs = numel(metabList);
+    analysisTransform = zeros(nMetabs, nBasis);
+    hasBasisRepresentation = false(nMetabs, 1);
 
-    corrMatrix = nan(nMetabs, nMetabs);
-    covMatrix = nan(nMetabs, nMetabs);
+    for m = 1:nMetabs
+        components = split(metabList(m), "+");
+        for c = 1:numel(components)
+            idxBasis = find(strcmp(basisNames, components(c)), 1, 'first');
+            if ~isempty(idxBasis)
+                analysisTransform(m, idxBasis) = 1;
+                hasBasisRepresentation(m) = true;
+            end
+        end
+    end
+
+    covMatrix = analysisTransform * componentCov * analysisTransform.';
+    covMatrix = (covMatrix + covMatrix.') ./ 2;
+    corrMatrix = CovarianceToCorrelation(covMatrix);
 
     concVec = nan(1, nMetabs);
     crlbVec = nan(1, nMetabs);
     sdVec = nan(1, nMetabs);
 
-    idxFull = nan(nMetabs, 1);
-
     for m = 1:nMetabs
-
-        idx = find(strcmp(fullNames, metabList(m)), 1, 'first');
-
-        if ~isempty(idx)
-            idxFull(m) = idx;
-        end
-
-        idxCoord = find(strcmp(string(coordCRLBTable.name), metabList(m)), 1, 'first');
-
+        idxCoord = find(strcmp(coordNames, metabList(m)), 1, 'first');
         if ~isempty(idxCoord)
             concVec(m) = coordCRLBTable.concentration(idxCoord);
             crlbVec(m) = coordCRLBTable.crlbPercent(idxCoord);
@@ -869,33 +1019,31 @@ function [corrMatrix, covMatrix, concVec, crlbVec, sdVec] = ...
         end
     end
 
-    validInPrint = ~isnan(idxFull);
-
-    if any(validInPrint)
-        corrMatrix(validInPrint, validInPrint) = ...
-            fullCorrMatrix(idxFull(validInPrint), idxFull(validInPrint));
-    end
-
-    invalid = isnan(concVec) | isnan(crlbVec) | isnan(sdVec);
+    invalid = ~hasBasisRepresentation.' | ...
+        isnan(concVec) | isnan(crlbVec) | isnan(sdVec);
 
     if maskInvalidCRLB
         invalid = invalid | concVec <= 0 | crlbVec >= invalidCRLBValue;
     end
 
+    invalid = invalid | ~isfinite(diag(covMatrix)).' | diag(covMatrix).' <= 0;
+
     corrMatrix(invalid, :) = NaN;
     corrMatrix(:, invalid) = NaN;
-
-    for m = 1:nMetabs
-        if ~invalid(m) && ~isnan(corrMatrix(m, m))
-            corrMatrix(m, m) = 1;
-        end
-    end
-
-    sdOuter = sdVec(:) * sdVec(:).';
-    covMatrix = corrMatrix .* sdOuter;
-
     covMatrix(invalid, :) = NaN;
     covMatrix(:, invalid) = NaN;
+
+    validDiagonal = find(~invalid);
+    corrMatrix(sub2ind(size(corrMatrix), validDiagonal, validDiagonal)) = 1;
+end
+
+
+function corrMatrix = CovarianceToCorrelation(covMatrix)
+
+    variances = diag(covMatrix);
+    denominator = sqrt(variances * variances.');
+    corrMatrix = covMatrix ./ denominator;
+    corrMatrix = (corrMatrix + corrMatrix.') ./ 2;
 end
 
 

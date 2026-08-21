@@ -27,7 +27,7 @@ cfg.paths.coordDir = fullfile(cfg.paths.rootDir, "LCMFit");
 % cfg.input.recursive = false;
 
 %% Call splice function
-% processedPatients = Splice_data_multi_patient_input(cfg);
+processedPatients = Splice_data_multi_patient_input(cfg);
 
 %% Load coord files
 %% Load only one fitted patient folder
