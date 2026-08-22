@@ -27,7 +27,7 @@ cfg.paths.coordDir = fullfile(cfg.paths.rootDir, "LCMFit");
 % cfg.input.recursive = false;
 
 %% Call splice function
-processedPatients = Splice_data_multi_patient_input(cfg);
+% processedPatients = Splice_data_multi_patient_input(cfg);
 
 %% Load coord files
 %% Load only one fitted patient folder
@@ -88,6 +88,9 @@ set(gca, 'FontSize', 15);
 %% All subfolders
 cfg.degraaf.loadMode = "allSubfolders";
 cfg.degraaf.division = 1;
+% false: basis-overlap covariance without Division-36 baseline
+% true:  basis-overlap covariance with Division-36 baseline nuisance function
+cfg.degraaf.includeDiv36Baseline = false;
 cfg.degraaf.maskInvalidCRLB = false;
 cfg.degraaf.invalidCRLBValue = 100;
 

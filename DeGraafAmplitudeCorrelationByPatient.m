@@ -51,6 +51,7 @@ function outputs = DeGraafAmplitudeCorrelationByPatient(cfg, varargin)
     fprintf('Load mode: %s\n', opts.loadMode);
     fprintf('Number of patient folders: %d\n', nPatients);
     fprintf('Division used: Division_%d\n', opts.division);
+    fprintf('Include Division-36 baseline: %d\n', opts.includeDiv36Baseline);
     fprintf('Mask invalid CRLB rows/columns: %d\n', opts.maskInvalidCRLB);
 
     for pIdx = 1:nPatients
@@ -67,11 +68,16 @@ function outputs = DeGraafAmplitudeCorrelationByPatient(cfg, varargin)
             filePrefix = "";
         end
 
-        baselineCoordFile = FindDivisionCoordFile( ...
-            coordDir, filePrefix, 36, 1);
-        [~, baselineFitData] = VDIIO.ReadLCMCoord(baselineCoordFile);
-        [baselineAxis, baselineVector] = ExtractDivisionBaseline( ...
-            baselineFitData, baselineCoordFile);
+        baselineAxis = [];
+        baselineVector = [];
+
+        if opts.includeDiv36Baseline
+            baselineCoordFile = FindDivisionCoordFile( ...
+                coordDir, filePrefix, 36, 1);
+            [~, baselineFitData] = VDIIO.ReadLCMCoord(baselineCoordFile);
+            [baselineAxis, baselineVector] = ExtractDivisionBaseline( ...
+                baselineFitData, baselineCoordFile);
+        end
 
         printFiles = FindDivisionPrintFiles( ...
             coordDir, ...
@@ -128,6 +134,7 @@ function outputs = DeGraafAmplitudeCorrelationByPatient(cfg, varargin)
                         metabList, ...
                         baselineAxis, ...
                         baselineVector, ...
+                        opts.includeDiv36Baseline, ...
                         opts.maskInvalidCRLB, ...
                         opts.invalidCRLBValue);
 
@@ -289,6 +296,7 @@ function opts = ParseDeGraafOptionsFromConfig(cfg, varargin)
     opts.selectedSubfolders = strings(0, 1);
 
     opts.division = 1;
+    opts.includeDiv36Baseline = true;
 
     opts.addPatientPrefixToFilenames = true;
 
@@ -381,6 +389,11 @@ function opts = ParseDeGraafOptionsFromConfig(cfg, varargin)
             opts.division = double(GetFieldOrProperty(cfgD, "division"));
         end
 
+        if HasFieldOrProperty(cfgD, "includeDiv36Baseline")
+            opts.includeDiv36Baseline = logical(GetFieldOrProperty( ...
+                cfgD, "includeDiv36Baseline"));
+        end
+
         if HasFieldOrProperty(cfgD, "metabList")
             opts.metabList = string(GetFieldOrProperty(cfgD, "metabList"));
         end
@@ -409,6 +422,9 @@ function opts = ParseDeGraafOptionsFromConfig(cfg, varargin)
 
     p.addParameter('division', opts.division, @(x) isnumeric(x) && isscalar(x));
 
+    p.addParameter('includeDiv36Baseline', opts.includeDiv36Baseline, ...
+        @(x) islogical(x) && isscalar(x));
+
     p.addParameter('addPatientPrefixToFilenames', opts.addPatientPrefixToFilenames, ...
         @(x) islogical(x) && isscalar(x));
 
@@ -433,6 +449,7 @@ function opts = ParseDeGraafOptionsFromConfig(cfg, varargin)
     opts.selectedSubfolders = string(p.Results.selectedSubfolders);
 
     opts.division = double(p.Results.division);
+    opts.includeDiv36Baseline = logical(p.Results.includeDiv36Baseline);
     opts.addPatientPrefixToFilenames = logical(p.Results.addPatientPrefixToFilenames);
 
     opts.maskInvalidCRLB = logical(p.Results.maskInvalidCRLB);
@@ -896,7 +913,8 @@ end
 
 function [corrMatrix, covMatrix, concVec, crlbVec, sdVec] = ...
     BuildBasisOverlapAmplitudeMatrices(coordFile, coordCRLBTable, metabList, ...
-    baselineAxis, baselineVector, maskInvalidCRLB, invalidCRLBValue)
+    baselineAxis, baselineVector, includeDiv36Baseline, ...
+    maskInvalidCRLB, invalidCRLBValue)
 
     [~, fitData] = VDIIO.ReadLCMCoord(coordFile);
 
@@ -909,8 +927,6 @@ function [corrMatrix, covMatrix, concVec, crlbVec, sdVec] = ...
     partAxis = double(fitData.axis(:));
     basisData = double(fitData.basisData);
     basisNames = string(fitData.basisMetName(:));
-    baselineAxis = double(baselineAxis(:));
-    baselineVector = double(baselineVector(:));
 
     if size(basisData, 1) ~= numel(partAxis) || ...
             size(basisData, 2) ~= numel(basisNames)
@@ -918,45 +934,53 @@ function [corrMatrix, covMatrix, concVec, crlbVec, sdVec] = ...
             coordFile);
     end
 
-    if numel(partAxis) ~= numel(baselineAxis) || ...
-            ~isequal(partAxis, baselineAxis)
-        error(['Division-36 baseline grid does not exactly match the fitted ' ...
-            'metabolite basis grid in: %s'], coordFile);
-    end
-
-    if ~isreal(basisData) || ~isreal(baselineVector)
-        error('Baseline and fitted basis must use the same real spectral representation: %s', ...
-            coordFile);
-    end
-
-    if isempty(basisData) || any(~isfinite(basisData), 'all') || ...
-            any(~isfinite(baselineVector))
-        error('Fitted basis or Division-36 baseline contains invalid values: %s', ...
-            coordFile);
+    if ~isreal(basisData) || isempty(basisData) || ...
+            any(~isfinite(basisData), 'all')
+        error('Fitted basis is not a finite real spectral matrix: %s', coordFile);
     end
 
     if numel(unique(basisNames)) ~= numel(basisNames)
         error('Fitted basis contains duplicate metabolite names: %s', coordFile);
     end
 
-    % EstimateCovarianceMatrix uses raw fitted .coord spectra without column
-    % normalization. Keep that convention for the Division-36 baseline. Its
-    % nonzero scalar scale does not change the marginalized metabolite block.
-    augmentedBasis = [basisData, baselineVector];
-    augmentedNames = [basisNames; "Division36Baseline"];
+    covarianceBasis = basisData;
+    covarianceNames = basisNames;
 
-    [~, fullCovariance] = VDILCM.EstimateCovarianceMatrix( ...
-        'basisMatrix', augmentedBasis, ...
-        'metabNames', augmentedNames);
+    if includeDiv36Baseline
+        baselineAxis = double(baselineAxis(:));
+        baselineVector = double(baselineVector(:));
 
-    nBasis = numel(basisNames);
+        if numel(partAxis) ~= numel(baselineAxis) || ...
+                ~isequal(partAxis, baselineAxis)
+            error(['Division-36 baseline grid does not exactly match the fitted ' ...
+                'metabolite basis grid in: %s'], coordFile);
+        end
 
-    if ~isequal(size(fullCovariance), [nBasis + 1, nBasis + 1]) || ...
-            any(~isfinite(fullCovariance), 'all')
-        error('Augmented basis covariance is invalid for: %s', coordFile);
+        if ~isreal(baselineVector) || any(~isfinite(baselineVector))
+            error('Division-36 baseline is not a finite real spectrum: %s', ...
+                coordFile);
+        end
+
+        % EstimateCovarianceMatrix uses raw fitted .coord spectra without
+        % column normalization. Keep that convention for the baseline.
+        covarianceBasis = [basisData, baselineVector];
+        covarianceNames = [basisNames; "Division36Baseline"];
     end
 
-    % Remove the Division-36 nuisance parameter only after the full inverse.
+    [~, fullCovariance] = VDILCM.EstimateCovarianceMatrix( ...
+        'basisMatrix', covarianceBasis, ...
+        'metabNames', covarianceNames);
+
+    nBasis = numel(basisNames);
+    expectedCovarianceSize = nBasis + double(includeDiv36Baseline);
+
+    if ~isequal(size(fullCovariance), repmat(expectedCovarianceSize, 1, 2)) || ...
+            any(~isfinite(fullCovariance), 'all')
+        error('Basis-overlap covariance is invalid for: %s', coordFile);
+    end
+
+    % When present, remove the Division-36 nuisance parameter only after the
+    % full inverse. Without it, this selects the unchanged full covariance.
     componentScaleCov = fullCovariance(1:nBasis, 1:nBasis);
 
     metabList = string(metabList(:));
