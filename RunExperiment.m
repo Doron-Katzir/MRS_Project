@@ -134,6 +134,23 @@ title("Group mean De Graaf / LCModel amplitude correlation", ...
     'Interpreter', 'none');
 
 
+%% LCModel fitted-baseline diagnostics
+
+baselineDiagCfg.enabled = true;
+baselineDiagCfg.patientID = "P01";
+baselineDiagCfg.doPCA = true;
+baselineDiagCfg.doCohortPCA = true;
+baselineDiagCfg.nPCsToPlot = 3;
+baselineDiagCfg.doMetaboliteRegression = true;
+baselineDiagCfg.regressionMinObservations = 8;
+baselineDiagCfg.regressionIgnoreZeros = true;
+baselineDiagCfg.regressionExamplePatientID = "P01";
+baselineDiagCfg.regressionExampleMetabolite = "NAA";
+baselineDiagCfg.doPairResidualization = true;
+baselineDiagCfg.pairExamplePatientID = "P01";
+baselineDiagCfg.pairExampleMetabolites = ["NAA+NAAG", "Cr+PCr"];
+
+
 %% Plotting configurations
 
 plotCfg = struct();
@@ -259,6 +276,11 @@ filterCfg.wishartViews.modeC = struct('metabolites', "all", 'minValidParts', 30)
 
 [analysisData, filterReport] = ApplyAnalysisFilters( ...
     covOutputs, deGraafOutputs, filterCfg);
+
+if baselineDiagCfg.enabled
+    baselineDiagnostics = PlotLCModelBaselineDiagnostics( ...
+        covOutputs, baselineDiagCfg, analysisData.pairwise);
+end
 
 
 %% ================= STATISTICAL TEST CONFIGURATION =================
