@@ -6,12 +6,21 @@ function pairOutputs = TestPairwiseEmpiricalVsModelCorrelation(inputA, varargin)
 %
 % The legacy (covOutputs, deGraafOutputs, pairCfg) interface is retained as
 % an adapter; it delegates every inclusion decision to ApplyAnalysisFilters.
+% statsCfg.empiricalSignalSource defaults to "original".  The alternate
+% "baselinePCResidual" source consumes the already-aligned correlation table
+% produced by PlotLCModelBaselineDiagnostics; it does not refit regressions.
 
 [analysisData, statsCfg] = ResolveInputs(inputA, varargin{:});
 opts = ParseStatisticalOptions(statsCfg);
 view = analysisData.pairwise;
+[view, empiricalSignalSource] = ResolveEmpiricalSignalView(view, statsCfg);
 
-fprintf('\nRunning pairwise empirical-vs-LCModel/deGraaf correlation tests...\n');
+if empiricalSignalSource == "original"
+    fprintf('\nRunning pairwise empirical-vs-LCModel/deGraaf correlation tests...\n');
+else
+    fprintf(['\nRunning baseline-PC-residual empirical-vs-LCModel/deGraaf ', ...
+        'correlation tests...\n']);
+end
 fprintf('Number of patients available: %d\n', numel(view.patientIDs));
 fprintf('Number of metabolites requested: %d\n', numel(view.metabolites));
 
@@ -122,14 +131,30 @@ pairOutputs.crlbMajorityTable = analysisData.crlbMajorityTable;
 pairOutputs.filterReport = analysisData.filterReport;
 pairOutputs.pairSummaryTable = pairSummaryTable;
 pairOutputs.patientPairTable = patientPairTable;
+if empiricalSignalSource ~= "original"
+    pairOutputs.empiricalSignalType = empiricalSignalSource;
+end
 
 if opts.exportResults
     if ~exist(opts.outputDir, 'dir'), mkdir(opts.outputDir); end
-    writetable(pairSummaryTable, fullfile(opts.outputDir, 'Pairwise_Empirical_vs_Model_Summary.csv'));
-    writetable(patientPairTable, fullfile(opts.outputDir, 'Pairwise_Empirical_vs_Model_PatientLevel.csv'));
+    if empiricalSignalSource == "original"
+        summaryFile = 'Pairwise_Empirical_vs_Model_Summary.csv';
+        patientFile = 'Pairwise_Empirical_vs_Model_PatientLevel.csv';
+    else
+        summaryFile = ...
+            'Pairwise_Empirical_vs_Model_BaselineAdjusted_Summary.csv';
+        patientFile = ...
+            'Pairwise_Empirical_vs_Model_BaselineAdjusted_PatientLevel.csv';
+    end
+    writetable(pairSummaryTable, fullfile(opts.outputDir, summaryFile));
+    writetable(patientPairTable, fullfile(opts.outputDir, patientFile));
     fprintf('\nExported pairwise correlation test results to:\n  %s\n', opts.outputDir);
 end
-fprintf('\nPairwise empirical-vs-model correlation tests complete.\n');
+if empiricalSignalSource == "original"
+    fprintf('\nPairwise empirical-vs-model correlation tests complete.\n');
+else
+    fprintf('\nBaseline-adjusted pairwise empirical-vs-model tests complete.\n');
+end
 end
 
 % -------------------------------------------------------------------------
@@ -177,6 +202,129 @@ opts.alpha = double(GetOption(cfg, 'alpha', 0.05));
 opts.exportResults = logical(GetOption(cfg, 'exportResults', false));
 opts.outputDir = char(GetOption(cfg, 'outputDir', ...
     fullfile(pwd, 'PairwiseEmpiricalVsModelResults')));
+end
+
+function [view, signalSource] = ResolveEmpiricalSignalView(view, cfg)
+signalSource = string(GetOption(cfg, 'empiricalSignalSource', "original"));
+if ~isscalar(signalSource) || ismissing(signalSource) || ...
+        strlength(signalSource) == 0
+    error('empiricalSignalSource must be one nonempty string scalar.');
+end
+
+if strcmpi(signalSource, "original")
+    signalSource = "original";
+    return;
+end
+if ~strcmpi(signalSource, "baselinePCResidual")
+    error('Unsupported empiricalSignalSource: %s.', signalSource);
+end
+signalSource = "baselinePCResidual";
+
+if ~isstruct(cfg) || ~isfield(cfg, 'empiricalCorrelationTable') || ...
+        ~istable(cfg.empiricalCorrelationTable)
+    error(['baselinePCResidual requires statsCfg.empiricalCorrelationTable ', ...
+        'from baselineDiagnostics.pairResidualizationTable.']);
+end
+view = SubstituteBaselineResidualCorrelations( ...
+    view, cfg.empiricalCorrelationTable);
+end
+
+function view = SubstituteBaselineResidualCorrelations(view, residualTable)
+requiredColumns = { ...
+    'patientID','metaboliteA','metaboliteB','nValidPartsOriginal', ...
+    'nValidPartsCommon','rEmpOriginal','rEmpResidual','rDeGraaf', ...
+    'status','reason'};
+missingColumns = requiredColumns(~ismember( ...
+    requiredColumns, residualTable.Properties.VariableNames));
+if ~isempty(missingColumns)
+    error('The baseline residual table is missing column(s): %s.', ...
+        strjoin(missingColumns, ', '));
+end
+
+eligibility = view.patientEligibilityTable;
+sourceKeys = PairKeys(eligibility);
+residualKeys = PairKeys(residualTable);
+if numel(unique(residualKeys)) ~= numel(residualKeys)
+    error('The baseline residual table contains duplicate patient/pair rows.');
+end
+[wasFound, locations] = ismember(sourceKeys, residualKeys);
+if any(~wasFound)
+    missingRow = find(~wasFound, 1, 'first');
+    error('No baseline residual row was found for %s.', sourceKeys(missingRow));
+end
+
+originalEligibility = logical(eligibility.eligible);
+for rowIndex = 1:height(eligibility)
+    if ~originalEligibility(rowIndex)
+        continue;
+    end
+
+    residualRow = residualTable(locations(rowIndex), :);
+    if residualRow.nValidPartsOriginal ~= eligibility.nValidParts(rowIndex) || ...
+            ~NearlyEqual(residualRow.rEmpOriginal, ...
+            eligibility.rEmpirical(rowIndex), 1e-10) || ...
+            ~NearlyEqual(residualRow.rDeGraaf, ...
+            eligibility.rModel(rowIndex), 1e-12)
+        error(['Baseline residual alignment check failed for patient %s, ', ...
+            'pair %s/%s.'], eligibility.patientID(rowIndex), ...
+            eligibility.metaboliteA(rowIndex), ...
+            eligibility.metaboliteB(rowIndex));
+    end
+
+    eligibility.nValidParts(rowIndex) = residualRow.nValidPartsCommon;
+    if string(residualRow.status) ~= "OK"
+        eligibility.eligible(rowIndex) = false;
+        eligibility.rEmpirical(rowIndex) = NaN;
+        eligibility.reason(rowIndex) = ...
+            "baseline-PC residual: " + string(residualRow.reason);
+        continue;
+    end
+    if residualRow.nValidPartsCommon < view.minValidParts
+        eligibility.eligible(rowIndex) = false;
+        eligibility.rEmpirical(rowIndex) = NaN;
+        eligibility.reason(rowIndex) = "insufficient valid parts";
+        continue;
+    end
+    if ~isfinite(residualRow.rEmpResidual)
+        eligibility.eligible(rowIndex) = false;
+        eligibility.rEmpirical(rowIndex) = NaN;
+        eligibility.reason(rowIndex) = ...
+            "nonfinite baseline-PC residual correlation";
+        continue;
+    end
+
+    eligibility.rEmpirical(rowIndex) = residualRow.rEmpResidual;
+    eligibility.reason(rowIndex) = "";
+end
+
+view.patientEligibilityTable = eligibility;
+for pairIndex = 1:height(view.pairTable)
+    pairRows = eligibility.metaboliteA == ...
+        string(view.pairTable.metaboliteA(pairIndex)) & ...
+        eligibility.metaboliteB == ...
+        string(view.pairTable.metaboliteB(pairIndex));
+    nEligible = sum(eligibility.eligible(pairRows));
+    view.pairTable.nEligiblePatients(pairIndex) = nEligible;
+    view.pairTable.groupEligible(pairIndex) = ...
+        nEligible >= view.minPatientsForGroupTest;
+    if view.pairTable.groupEligible(pairIndex)
+        view.pairTable.groupExclusionReason(pairIndex) = "";
+    else
+        view.pairTable.groupExclusionReason(pairIndex) = ...
+            "fewer than " + string(view.minPatientsForGroupTest) + ...
+            " eligible patients";
+    end
+end
+end
+
+function keys = PairKeys(T)
+separator = string(char(31));
+keys = string(T.patientID) + separator + string(T.metaboliteA) + ...
+    separator + string(T.metaboliteB);
+end
+
+function tf = NearlyEqual(a, b, tolerance)
+tf = isfinite(a) && isfinite(b) && abs(double(a) - double(b)) <= tolerance;
 end
 
 function value = GetOption(s, fieldName, defaultValue)
