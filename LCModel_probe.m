@@ -35,5 +35,29 @@ plot(fitData.axis, naaPostFitCandidate)
 set(gca,'XDir','reverse')
 xlabel('ppm')
 
+
+% pre-fit NAA restricted to LCModel fitting range
+mask = ppmBasis >= 0.2 & ppmBasis <= 4.0;
+naaPre = real(basisCell{1}(mask));
+
+% post-fit candidate
+j = find(fitData.basisMetName == "NAA");
+cNAA = 1.06e-7;
+naaPost = fitData.basisData(:,j) / cNAA;
+
+% normalize both
+naaPreNorm  = naaPre(:)  / norm(naaPre);
+naaPostNorm = naaPost(:) / norm(naaPost);
+
+figure;
+plot(fitData.axis, naaPreNorm, ...
+    fitData.axis, naaPostNorm)
+set(gca,'XDir','reverse')
+legend('Pre-fit','Post-fit candidate')
+
+
 % Load print file
 printFile = "C:\Users\User\Documents\Thesis_Lab\LCMFit\P01\P01_Division_1_part_1.basis.print";
+
+
+
