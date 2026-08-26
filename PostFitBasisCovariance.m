@@ -67,16 +67,20 @@ classdef PostFitBasisCovariance
         end
 
         function [C, d] = SolveGeometry(designMatrix)
+            designMatrix = double(designMatrix);
             H = real(designMatrix' * designMatrix);
             H = (H + H.') ./ 2;
             n = size(H, 1);
 
             d = struct();
+            d.solverMethod = "unit-column-scaled thin QR";
             d.H = H;
             d.sizeH = size(H);
             d.rankH = rank(H);
             d.conditionNumber = cond(H);
             d.rcondH = rcond(H);
+            d.rankA = rank(designMatrix);
+            d.conditionNumberA = cond(designMatrix);
 
             eigenvalues = eig(H, 'vector');
             d.minimumEigenvalue = min(real(eigenvalues));
@@ -84,21 +88,78 @@ classdef PostFitBasisCovariance
             [~, cholStatus] = chol(H);
             d.positiveDefinite = cholStatus == 0;
 
-            tolerance = max(1, n) * eps(max(1, norm(H, 1)));
-            d.numericallyUsable = d.positiveDefinite && ...
-                d.rankH == n && isfinite(d.conditionNumber) && ...
-                d.rcondH > tolerance / max(1, norm(H, 1));
+            % Concentration normalization is scientific and has already been
+            % applied by BuildIndependentBasis. This second scaling is purely
+            % numerical: As = A*D^-1, D = diag(column L2 norms).
+            columnScale = vecnorm(designMatrix, 2, 1);
+            d.columnScale = columnScale;
+            d.minimumColumnNorm = min(columnScale);
+            d.maximumColumnNorm = max(columnScale);
+            d.columnNormRatio = d.maximumColumnNorm / d.minimumColumnNorm;
+            d.validColumnScale = all(isfinite(columnScale) & columnScale > 0);
+            d.rankScaledA = NaN;
+            d.conditionNumberScaledA = NaN;
+            d.rcondScaledA = NaN;
+            d.R = nan(n);
+            d.absDiagonalR = nan(n, 1);
+            d.smallestAbsDiagonalR = NaN;
+            d.qrRankTolerance = NaN;
+            d.rankFromQR = NaN;
+            d.covarianceFinite = false;
+            d.covariancePositiveDefinite = false;
+            d.numericallyUsable = false;
 
-            if ~d.numericallyUsable
+            if ~d.validColumnScale || any(~isfinite(designMatrix), 'all')
                 C = nan(n);
-                warning(['Basis H is singular or numerically unusable: size %dx%d, ', ...
-                    'rank %d, cond %.6g, minEig %.6g. No pseudoinverse was used.'], ...
-                    n, n, d.rankH, d.conditionNumber, d.minimumEigenvalue);
+                warning('PostFitBasisCovariance:InvalidDesignScale', ...
+                    ['Design matrix has a zero/nonfinite column norm or ', ...
+                    'nonfinite entry. No pseudoinverse was used.']);
                 return;
             end
 
-            C = H \ eye(n);
+            scaledDesign = designMatrix ./ columnScale;
+            [~, R] = qr(scaledDesign, 0);
+            absDiagonalR = abs(diag(R));
+            qrTolerance = max(size(scaledDesign)) * eps(norm(R, inf));
+
+            d.rankScaledA = rank(scaledDesign);
+            d.conditionNumberScaledA = cond(scaledDesign);
+            d.rcondScaledA = rcond(R);
+            d.R = R;
+            d.absDiagonalR = absDiagonalR;
+            d.smallestAbsDiagonalR = min(absDiagonalR);
+            d.qrRankTolerance = qrTolerance;
+            d.rankFromQR = sum(absDiagonalR > qrTolerance);
+
+            if d.rankFromQR ~= n || d.rankScaledA ~= n || ...
+                    ~isfinite(d.conditionNumberScaledA)
+                C = nan(n);
+                warning('PostFitBasisCovariance:RankDeficientScaledDesign', ...
+                    ['Scaled design matrix is numerically rank deficient: ', ...
+                    'QR rank %d/%d, rank(As) %d/%d, cond(As) %.6g. ', ...
+                    'No pseudoinverse was used.'], d.rankFromQR, n, ...
+                    d.rankScaledA, n, d.conditionNumberScaledA);
+                return;
+            end
+
+            % Cs = R^-1*R^-T, evaluated with a triangular solve. Because
+            % As=A*D^-1 and beta_scaled=D*beta, transform covariance back as
+            % C=D^-1*Cs*D^-1. No A'*A inverse is used for the solve.
+            Rinverse = R \ eye(n);
+            scaledCovariance = Rinverse * Rinverse.';
+            inverseScale = 1 ./ columnScale;
+            C = scaledCovariance .* (inverseScale.' * inverseScale);
             C = (C + C.') ./ 2;
+            d.covarianceFinite = all(isfinite(C), 'all');
+            [~, covarianceCholStatus] = chol(C);
+            d.covariancePositiveDefinite = covarianceCholStatus == 0;
+            d.numericallyUsable = d.covarianceFinite;
+
+            if ~d.numericallyUsable
+                C = nan(n);
+                warning('PostFitBasisCovariance:NonfiniteCovariance', ...
+                    'Scaled-QR covariance contains nonfinite values.');
+            end
         end
 
         function [M, propagationTable] = BuildReportedTransformation( ...

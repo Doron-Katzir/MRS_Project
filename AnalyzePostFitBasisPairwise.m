@@ -2,9 +2,10 @@ function outputs = AnalyzePostFitBasisPairwise( ...
         covOutputs, deGraafOutputs, analysisData, statsCfg, cfg, basisCfg)
 %AnalyzePostFitBasisPairwise Parallel Division-1 post-fit basis experiment.
 %
-% Experiment A solves the independent-component covariance from B'*B.
-% Experiment B appends the same fit's fitted baseline as one nuisance column,
-% solves the full covariance, and then retains the component block. Both
+% Experiment A solves the independent-component covariance with a
+% unit-column-scaled thin QR factorization of B. Experiment B applies the
+% same solve after appending that fit's baseline as one nuisance column and
+% then retains the component block. Both
 % component covariances use the same reported-sum propagation and are averaged
 % across parts before conversion to one patient correlation matrix. The
 % already-filtered production pairwise view supplies the unchanged empirical
@@ -24,7 +25,8 @@ nExpectedParts = numel(opts.expectedParts);
 fprintf('\nPost-fit basis empirical-vs-model diagnostic\n');
 fprintf('Patients: %d; Division: %d; expected parts per patient: %d\n', ...
     nPatients, opts.division, nExpectedParts);
-fprintf('Experiment A: B''B; Experiment B: [B baseline]''[B baseline]\n');
+fprintf(['Per-part covariance solve: unit-column scaling + thin QR; ', ...
+    'Experiment B appends one same-fit baseline column\n']);
 
 patientResults = repmat(EmptyPatientResult(), nPatients, 1);
 patientResultsByID = struct();
@@ -76,10 +78,20 @@ for pIdx = 1:nPatients
             componentNamesByPart{expectedIdx} = componentNames;
 
             [C0Component, h0] = PostFitBasisCovariance.SolveGeometry(B);
-            d.rankNoBaseline = h0.rankH;
-            d.conditionNumberNoBaseline = h0.conditionNumber;
-            d.rcondNoBaseline = h0.rcondH;
-            d.positiveDefiniteNoBaseline = h0.positiveDefinite;
+            d.rankNoBaseline = h0.rankFromQR;
+            d.rankANoBaseline = h0.rankA;
+            d.rankScaledNoBaseline = h0.rankScaledA;
+            d.gramRankNoBaseline = h0.rankH;
+            d.conditionNumberNoBaseline = h0.conditionNumberA;
+            d.conditionNumberScaledNoBaseline = h0.conditionNumberScaledA;
+            d.gramConditionNumberNoBaseline = h0.conditionNumber;
+            d.rcondNoBaseline = h0.rcondScaledA;
+            d.minimumColumnNormNoBaseline = h0.minimumColumnNorm;
+            d.maximumColumnNormNoBaseline = h0.maximumColumnNorm;
+            d.columnNormRatioNoBaseline = h0.columnNormRatio;
+            d.smallestAbsDiagonalRNoBaseline = h0.smallestAbsDiagonalR;
+            d.qrRankToleranceNoBaseline = h0.qrRankTolerance;
+            d.positiveDefiniteNoBaseline = h0.covariancePositiveDefinite;
             d.usableNoBaseline = h0.numericallyUsable;
             if h0.numericallyUsable
                 C0 = M * C0Component * M.';
@@ -91,10 +103,20 @@ for pIdx = 1:nPatients
             d.baselineFromSameFit = true;
             d.baselineNorm = norm(baseline);
             [C1Full, h1] = PostFitBasisCovariance.SolveGeometry([B, baseline]);
-            d.rankWithBaseline = h1.rankH;
-            d.conditionNumberWithBaseline = h1.conditionNumber;
-            d.rcondWithBaseline = h1.rcondH;
-            d.positiveDefiniteWithBaseline = h1.positiveDefinite;
+            d.rankWithBaseline = h1.rankFromQR;
+            d.rankAWithBaseline = h1.rankA;
+            d.rankScaledWithBaseline = h1.rankScaledA;
+            d.gramRankWithBaseline = h1.rankH;
+            d.conditionNumberWithBaseline = h1.conditionNumberA;
+            d.conditionNumberScaledWithBaseline = h1.conditionNumberScaledA;
+            d.gramConditionNumberWithBaseline = h1.conditionNumber;
+            d.rcondWithBaseline = h1.rcondScaledA;
+            d.minimumColumnNormWithBaseline = h1.minimumColumnNorm;
+            d.maximumColumnNormWithBaseline = h1.maximumColumnNorm;
+            d.columnNormRatioWithBaseline = h1.columnNormRatio;
+            d.smallestAbsDiagonalRWithBaseline = h1.smallestAbsDiagonalR;
+            d.qrRankToleranceWithBaseline = h1.qrRankTolerance;
+            d.positiveDefiniteWithBaseline = h1.covariancePositiveDefinite;
             d.usableWithBaseline = h1.numericallyUsable;
             if h1.numericallyUsable
                 nComponents = size(B, 2);
@@ -678,10 +700,20 @@ d = struct('patientID', "", 'division', NaN, 'part', NaN, 'status', "not_run", .
     'available', false, 'coordFile', "", 'spectralPointCount', NaN, ...
     'nComponents', NaN, 'componentNames', "", 'concentrationNormalized', false, ...
     'nExcludedBasisTraces', NaN, 'baselineFromSameFit', false, 'baselineNorm', NaN, ...
-    'rankNoBaseline', NaN, 'conditionNumberNoBaseline', NaN, 'rcondNoBaseline', NaN, ...
+    'rankNoBaseline', NaN, 'rankANoBaseline', NaN, 'rankScaledNoBaseline', NaN, ...
+    'gramRankNoBaseline', NaN, 'conditionNumberNoBaseline', NaN, ...
+    'conditionNumberScaledNoBaseline', NaN, 'gramConditionNumberNoBaseline', NaN, ...
+    'rcondNoBaseline', NaN, 'minimumColumnNormNoBaseline', NaN, ...
+    'maximumColumnNormNoBaseline', NaN, 'columnNormRatioNoBaseline', NaN, ...
+    'smallestAbsDiagonalRNoBaseline', NaN, 'qrRankToleranceNoBaseline', NaN, ...
     'positiveDefiniteNoBaseline', false, 'usableNoBaseline', false, ...
-    'rankWithBaseline', NaN, 'conditionNumberWithBaseline', NaN, ...
-    'rcondWithBaseline', NaN, 'positiveDefiniteWithBaseline', false, ...
+    'rankWithBaseline', NaN, 'rankAWithBaseline', NaN, ...
+    'rankScaledWithBaseline', NaN, 'gramRankWithBaseline', NaN, ...
+    'conditionNumberWithBaseline', NaN, 'conditionNumberScaledWithBaseline', NaN, ...
+    'gramConditionNumberWithBaseline', NaN, 'rcondWithBaseline', NaN, ...
+    'minimumColumnNormWithBaseline', NaN, 'maximumColumnNormWithBaseline', NaN, ...
+    'columnNormRatioWithBaseline', NaN, 'smallestAbsDiagonalRWithBaseline', NaN, ...
+    'qrRankToleranceWithBaseline', NaN, 'positiveDefiniteWithBaseline', false, ...
     'usableWithBaseline', false, 'errorMessage', "");
 end
 
