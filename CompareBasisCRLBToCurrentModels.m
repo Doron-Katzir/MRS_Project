@@ -63,6 +63,22 @@ function outputs = CompareBasisCRLBToCurrentModels(covOutputs, deGraafOutputs, c
     outputs.cohortSummaryTable = cohortSummaryTable;
     outputs.basisInspection = BuildBasisInspection(patientResults, opts);
     outputs.group = group;
+
+    if opts.makeSingleFitDiagnostic
+        singleFit = BuildSingleFitDiagnostic( ...
+            patientResultsByID, deGraafOutputs, opts);
+        singleFitKey = matlab.lang.makeValidName(sprintf('%s_Div%d_Part%d', ...
+            opts.singleFitPatientID, opts.singleFitDivision, opts.singleFitPart));
+        outputs.singleFit.(singleFitKey) = singleFit;
+        if opts.makeSingleFitFigures
+            [singleFitFiles, singleFitFigureMetadata] = ...
+                MakeSingleFitDiagnosticFigures(singleFit, opts);
+            outputs.singleFit.(singleFitKey).figureFiles = singleFitFiles;
+            outputs.singleFit.(singleFitKey).figureMetadata = ...
+                singleFitFigureMetadata;
+        end
+        PrintSingleFitReport(outputs.singleFit.(singleFitKey));
+    end
     outputs.scaleHandling = struct( ...
         'hasJustifiedSigmaSquared', false, ...
         'sigmaSquaredSource', "none", ...
@@ -121,6 +137,11 @@ function opts = ParseOptions(cfg, diagCfg)
     opts.independentCandidateNames = DefaultIndependentCandidateNames();
     opts.makeFigures = true;
     opts.makeGroupFigures = true;
+    opts.makeSingleFitDiagnostic = false;
+    opts.makeSingleFitFigures = true;
+    opts.singleFitPatientID = "P01";
+    opts.singleFitDivision = 1;
+    opts.singleFitPart = 1;
     opts.saveFigures = true;
     opts.closeFigures = true;
     opts.figureVisible = "off";
@@ -150,6 +171,7 @@ function opts = ParseOptions(cfg, diagCfg)
         opts.patientIDs = string(opts.patientIDs(:));
     end
     opts.detailedPatientID = string(opts.detailedPatientID);
+    opts.singleFitPatientID = string(opts.singleFitPatientID);
     opts.reportedNames = string(opts.reportedNames(:));
     opts.finalPanel = string(opts.finalPanel(:));
     opts.independentCandidateNames = string(opts.independentCandidateNames(:));
@@ -206,7 +228,8 @@ end
 function result = AnalyzePatient(patientID, covPatient, deGraafPatient, opts)
     reportedNames = opts.reportedNames;
     nReported = numel(reportedNames);
-    storeFullMatrices = patientID == opts.detailedPatientID;
+    storeFullMatrices = patientID == opts.detailedPatientID || ...
+        (opts.makeSingleFitDiagnostic && patientID == opts.singleFitPatientID);
 
     if double(deGraafPatient.division) ~= opts.division || ...
             double(covPatient.division) ~= opts.division
@@ -829,11 +852,15 @@ end
 
 
 function T = BuildTopDiscrepancyTable(nameA, nameB, comparisonValues, ...
-        referenceValues, comparisonLabel, referenceLabel)
+        referenceValues, comparisonLabel, referenceLabel, varargin)
+    nTop = 10;
+    if ~isempty(varargin)
+        nTop = double(varargin{1});
+    end
     difference = comparisonValues - referenceValues;
     absDifference = abs(difference);
     [~, order] = sort(absDifference, 'descend');
-    order = order(1:min(10, numel(order)));
+    order = order(1:min(nTop, numel(order)));
 
     comparisonVar = char(matlab.lang.makeValidName(comparisonLabel));
     referenceVar = char(matlab.lang.makeValidName(referenceLabel));
@@ -959,6 +986,277 @@ function q = SimpleQuantile(x, probability)
         upperIndex = ceil(position);
         weight = position - lowerIndex;
         q = (1 - weight) * x(lowerIndex) + weight * x(upperIndex);
+    end
+end
+
+
+function result = BuildSingleFitDiagnostic(patientResultsByID, deGraafOutputs, opts)
+    patientID = opts.singleFitPatientID;
+    safeID = matlab.lang.makeValidName(char(patientID));
+    if ~isfield(patientResultsByID, safeID)
+        error('Single-fit patient %s is not in the selected diagnostic set.', patientID);
+    end
+    patient = patientResultsByID.(safeID);
+    partIdx = find([patient.partDiagnostics.part] == opts.singleFitPart, 1, 'first');
+    if isempty(partIdx)
+        error('No basis diagnostic exists for %s Division-%d part %d.', ...
+            patientID, opts.singleFitDivision, opts.singleFitPart);
+    end
+    part = patient.partDiagnostics(partIdx);
+    if isempty(part.B) || isempty(part.H) || isempty(part.CComponentGeometry)
+        error('Full matrices were not retained for the requested single fit.');
+    end
+    if ~part.numericallyUsable
+        error(['The requested single-fit H is not numerically usable; ', ...
+            'comparison stopped without a pseudoinverse.']);
+    end
+
+    deGraafPatient = GetPatientResult(deGraafOutputs, patientID);
+    if double(deGraafPatient.division) ~= opts.singleFitDivision
+        error('The supplied DeGraaf data do not represent requested Division-%d.', ...
+            opts.singleFitDivision);
+    end
+    infoIdx = find(deGraafPatient.partInfo.part == opts.singleFitPart & ...
+        deGraafPatient.partInfo.wasParsed, 1, 'first');
+    if isempty(infoIdx)
+        error('No successfully parsed .print file exists for the requested single fit.');
+    end
+    printFile = string(deGraafPatient.partInfo.printFile(infoIdx));
+    [fullPrintCorrelation, fullPrintNames] = ...
+        ParseLCModelPrintCorrelationDiagnostic(printFile);
+
+    componentNames = part.componentNames;
+    printIndices = nan(numel(componentNames), 1);
+    missingNames = strings(0, 1);
+    for k = 1:numel(componentNames)
+        idx = find(strcmp(fullPrintNames, componentNames(k)), 1, 'first');
+        if isempty(idx)
+            missingNames(end+1, 1) = componentNames(k); %#ok<AGROW>
+        else
+            printIndices(k) = idx;
+        end
+    end
+    if ~isempty(missingNames)
+        error('Active basis names missing from raw .print matrix: %s', ...
+            strjoin(missingNames, ', '));
+    end
+
+    printIndices = double(printIndices);
+    extractedPrintNames = fullPrintNames(printIndices);
+    membershipMatches = all(ismember(componentNames, fullPrintNames));
+    orderMatchesAfterAlignment = isequal(componentNames, extractedPrintNames);
+    if ~membershipMatches || ~orderMatchesAfterAlignment
+        error('Name alignment failed after explicit matching by component label.');
+    end
+
+    B = part.B;
+    H = part.H;
+    CBasis = part.CComponentGeometry;
+    RBasis = CovarianceToCorrelation(CBasis);
+    RPrint = fullPrintCorrelation(printIndices, printIndices);
+    RPrint = (RPrint + RPrint.') ./ 2;
+
+    correlationValidation = ValidateCorrelationMatrix(RBasis);
+    if ~correlationValidation.isValid
+        error('The single-fit basis correlation matrix failed validation.');
+    end
+    printValidation = ValidateCorrelationMatrix(RPrint);
+    if ~printValidation.isValid
+        error('The extracted single-fit .print correlation matrix failed validation.');
+    end
+
+    comparison = CompareCorrelation( ...
+        RBasis, RPrint, componentNames, componentNames, ...
+        "R_basis", "R_print");
+    [printValues, basisValues, componentA, componentB] = ...
+        UniqueOffDiagonalEntries(RPrint, RBasis, componentNames);
+    finite = isfinite(printValues) & isfinite(basisValues);
+    comparison.topDiscrepancies = BuildTopDiscrepancyTable( ...
+        componentA(finite), componentB(finite), basisValues(finite), ...
+        printValues(finite), "R_basis", "R_print", 15);
+
+    RGlobalSignInverted = RBasis;
+    offDiagonalMask = ~eye(size(RBasis, 1));
+    RGlobalSignInverted(offDiagonalMask) = ...
+        -RGlobalSignInverted(offDiagonalMask);
+    signInvertedComparison = CompareCorrelation( ...
+        RGlobalSignInverted, RPrint, componentNames, componentNames, ...
+        "minus_R_basis_off_diagonal", "R_print");
+
+    concentrations = part.componentConcentrations(:);
+    BRawFitted = B .* concentrations.';
+    [CRawFittedGeometry, rawHDiagnostics] = SolveGeometry(BRawFitted);
+    if ~rawHDiagnostics.numericallyUsable
+        error('The raw-column scaling check produced an unusable H matrix.');
+    end
+    RRawFitted = CovarianceToCorrelation(CRawFittedGeometry);
+    scalingDifference = RRawFitted - RBasis;
+    maxScalingDifference = max(abs(scalingDifference), [], 'all');
+    scalingTolerance = 1e-10;
+
+    result = struct();
+    result.patientID = patientID;
+    result.division = opts.singleFitDivision;
+    result.part = opts.singleFitPart;
+    result.coordFile = part.coordFile;
+    result.printFile = printFile;
+    result.componentNames = componentNames;
+    result.nComponents = numel(componentNames);
+    result.nSpectralPoints = size(B, 1);
+    result.BDimensions = size(B);
+    result.isReal = isreal(B);
+    result.B = B;
+    result.H = H;
+    result.CBasis = CBasis;
+    result.RBasis = RBasis;
+    result.RPrint = RPrint;
+    result.RDifference = RBasis - RPrint;
+    result.hDiagnostics = struct( ...
+        'sizeH', part.sizeH, 'rankH', part.rankH, ...
+        'conditionNumber', part.conditionNumber, ...
+        'minimumEigenvalue', part.minimumEigenvalue, ...
+        'maximumEigenvalue', part.maximumEigenvalue, ...
+        'positiveDefinite', part.positiveDefinite, ...
+        'numericallyUsable', part.numericallyUsable);
+    result.correlationValidation = correlationValidation;
+    result.printValidation = printValidation;
+    result.nameAlignment = struct( ...
+        'basisNames', componentNames, ...
+        'extractedPrintNames', extractedPrintNames, ...
+        'membershipMatches', membershipMatches, ...
+        'orderMatchesAfterAlignment', orderMatchesAfterAlignment);
+    result.comparisonMetrics = comparison;
+    result.discrepancyTable = comparison.topDiscrepancies;
+    result.globalSignCheck = struct( ...
+        'RGlobalSignInverted', RGlobalSignInverted, ...
+        'comparisonMetrics', signInvertedComparison, ...
+        'improvesRMSE', signInvertedComparison.RMSE < comparison.RMSE, ...
+        'improvesMatrixCorrelation', ...
+        signInvertedComparison.matrixCorrelation > comparison.matrixCorrelation);
+    result.columnScalingCheck = struct( ...
+        'BRawFitted', BRawFitted, ...
+        'RRawFitted', RRawFitted, ...
+        'maximumAbsoluteCorrelationDifference', maxScalingDifference, ...
+        'tolerance', scalingTolerance, ...
+        'equivalentWithinTolerance', maxScalingDifference <= scalingTolerance, ...
+        'allConcentrationsPositive', all(concentrations > 0), ...
+        'rawHDiagnostics', rawHDiagnostics);
+
+    isCloseAgreement = comparison.matrixCorrelation >= 0.99 && ...
+        comparison.RMSE <= 0.02 && comparison.signAgreement >= 0.95;
+    if isCloseAgreement
+        result.interpretationCase = "A";
+        result.interpretation = [ ...
+            "The simplified basis covariance closely reproduces the direct " + ...
+            ".print correlation for this fit; larger discrepancies are likely " + ...
+            "introduced by later propagation or aggregation."];
+    else
+        result.interpretationCase = "B";
+        result.interpretation = [ ...
+            "The discrepancy already exists within one fit. The simplified " + ...
+            "inverse Gram matrix does not reproduce LCModel's full reported " + ...
+            "correlation calculation."];
+    end
+end
+
+
+function validation = ValidateCorrelationMatrix(R)
+    n = size(R, 1);
+    finiteMask = isfinite(R);
+    validation = struct();
+    validation.symmetryError = norm(R - R.', 'fro');
+    validation.allFinite = all(finiteMask, 'all');
+    validation.maximumDiagonalError = max(abs(diag(R) - 1));
+    validation.minimumValue = min(R(finiteMask));
+    validation.maximumValue = max(R(finiteMask));
+    validation.valuesWithinBounds = all(abs(R(finiteMask)) <= 1 + 1e-10);
+    validation.isValid = isequal(size(R), [n n]) && ...
+        validation.symmetryError <= 1e-10 && validation.allFinite && ...
+        validation.maximumDiagonalError <= 1e-10 && ...
+        validation.valuesWithinBounds;
+end
+
+
+function [corrMatrix, names] = ParseLCModelPrintCorrelationDiagnostic(printFile)
+    if ~isfile(printFile)
+        error('Print file does not exist: %s', printFile);
+    end
+    lines = splitlines(string(fileread(printFile)));
+    startIdx = find(contains(lines, "Correlation coefficients"), 1, 'first');
+    if isempty(startIdx)
+        error('Could not find correlation section in %s.', printFile);
+    end
+    sectionLines = lines(startIdx+1:end);
+
+    firstHeaderToken = "";
+    for k = 1:numel(sectionLines)
+        line = strtrim(sectionLines(k));
+        if strlength(line) == 0
+            continue;
+        end
+        if contains(line, "1000Shift") || contains(line, "CONC")
+            break;
+        end
+        decimalNumbers = regexp(line, '[-+]?\d+\.\d+(?:[Ee][-+]?\d+)?', 'match');
+        if isempty(decimalNumbers)
+            tokens = split(line);
+            tokens = tokens(strlength(tokens) > 0);
+            if ~isempty(tokens)
+                firstHeaderToken = tokens(1);
+                break;
+            end
+        end
+    end
+    if strlength(firstHeaderToken) == 0
+        error('Could not determine first correlation parameter in %s.', printFile);
+    end
+
+    rowNames = strings(0, 1);
+    rowValues = {};
+    currentName = "";
+    currentValues = [];
+    numberPattern = '[-+]?\d+\.\d+(?:[Ee][-+]?\d+)?';
+    for k = 1:numel(sectionLines)
+        line = sectionLines(k);
+        if contains(line, "1000Shift") || contains(line, "CONC")
+            break;
+        end
+        numbers = regexp(line, numberPattern, 'match');
+        starts = regexp(line, numberPattern, 'start');
+        if isempty(numbers)
+            continue;
+        end
+        values = str2double(numbers);
+        label = strtrim(extractBefore(line, starts(1)));
+        if strlength(label) > 0
+            if strlength(currentName) > 0
+                rowNames(end+1, 1) = currentName; %#ok<AGROW>
+                rowValues{end+1, 1} = currentValues; %#ok<AGROW>
+            end
+            currentName = label;
+            currentValues = values(:).';
+        else
+            currentValues = [currentValues, values(:).']; %#ok<AGROW>
+        end
+    end
+    if strlength(currentName) > 0
+        rowNames(end+1, 1) = currentName;
+        rowValues{end+1, 1} = currentValues;
+    end
+
+    names = [firstHeaderToken; rowNames];
+    n = numel(names);
+    corrMatrix = nan(n);
+    corrMatrix(1:n+1:end) = 1;
+    for row = 2:n
+        values = rowValues{row-1};
+        expected = row - 1;
+        if numel(values) < expected
+            error('Correlation row %s is incomplete in %s.', names(row), printFile);
+        end
+        values = values(1:expected);
+        corrMatrix(row, 1:expected) = values;
+        corrMatrix(1:expected, row) = values(:);
     end
 end
 
@@ -1227,6 +1525,106 @@ function T = CovarianceSummaryTable(c)
         'VariableNames', {'nMetabolites', 'nEntries', 'matrixCorrelation', ...
         'normalizedRMSE', 'normalizedMAD', 'diagonalVarianceCorrelation', ...
         'bestFitScale', 'bestScaledRMSE', 'bestScaledMAD'});
+end
+
+
+function [files, metadata] = MakeSingleFitDiagnosticFigures(singleFit, opts)
+    names = singleFit.componentNames;
+    RBasis = singleFit.RBasis;
+    RPrint = singleFit.RPrint;
+    difference = singleFit.RDifference;
+    maxAbsDifference = max(abs(difference), [], 'all');
+    if ~isfinite(maxAbsDifference) || maxAbsDifference == 0
+        maxAbsDifference = 1;
+    end
+
+    fitName = sprintf('%s_Div%d_Part%d', singleFit.patientID, ...
+        singleFit.division, singleFit.part);
+    fitDir = fullfile(opts.outputDir, "SingleFit", fitName);
+    if opts.saveFigures && ~isfolder(fitDir)
+        mkdir(fitDir);
+    end
+
+    files = strings(4, 1);
+    descriptions = [ ...
+        "Single-fit basis-derived correlation"; ...
+        "Single-fit raw LCModel .print correlation"; ...
+        "Single-fit basis minus .print correlation"; ...
+        "Single-fit .print versus basis scatter"];
+
+    f = MatrixFigure(RBasis, names, ...
+        "R_basis: " + string(fitName), [-1 1], opts);
+    files(1) = SaveDiagnosticFigure(f, fitDir, ...
+        "01_R_basis_part1_heatmap.png", opts);
+
+    f = MatrixFigure(RPrint, names, ...
+        "R_print: " + string(fitName), [-1 1], opts);
+    files(2) = SaveDiagnosticFigure(f, fitDir, ...
+        "02_R_print_part1_heatmap.png", opts);
+
+    f = MatrixFigure(difference, names, ...
+        "R_basis - R_print: " + string(fitName), ...
+        [-maxAbsDifference maxAbsDifference], opts);
+    colormap(f, BlueWhiteRedMap(256));
+    files(3) = SaveDiagnosticFigure(f, fitDir, ...
+        "03_R_basis_minus_R_print_heatmap.png", opts);
+
+    [printValues, basisValues] = UpperPairVectors(RPrint, RBasis, false);
+    c = singleFit.comparisonMetrics;
+    f = ScatterFigure(printValues, basisValues, "R_print", "R_basis", ...
+        "Single-fit basis vs .print: " + string(fitName), opts, true);
+    AnnotateSingleFitScatter(f, c.matrixCorrelation, c.RMSE, c.signAgreement);
+    files(4) = SaveDiagnosticFigure(f, fitDir, ...
+        "04_R_print_vs_R_basis_scatter.png", opts);
+
+    metadata = table((1:4).', descriptions, files, ...
+        'VariableNames', {'figureNumber', 'description', 'file'});
+    metadata.componentOrder = repmat(strjoin(names, ", "), 4, 1);
+end
+
+
+function AnnotateSingleFitScatter(fig, matrixCorrelation, rmse, signAgreement)
+    ax = findobj(fig, 'Type', 'axes');
+    if isempty(ax)
+        return;
+    end
+    text(ax(1), 0.04, 0.96, sprintf([ ...
+        'Pearson r = %.3f\nRMSE = %.3f\nSign agreement = %.3f'], ...
+        matrixCorrelation, rmse, signAgreement), ...
+        'Units', 'normalized', 'VerticalAlignment', 'top', ...
+        'BackgroundColor', 'w', 'EdgeColor', [0.5 0.5 0.5], ...
+        'Color', 'k', 'FontSize', 11);
+end
+
+
+function PrintSingleFitReport(singleFit)
+    h = singleFit.hDiagnostics;
+    c = singleFit.comparisonMetrics;
+    signCheck = singleFit.globalSignCheck.comparisonMetrics;
+    scaling = singleFit.columnScalingCheck;
+
+    fprintf('\nSingle-fit basis vs raw .print diagnostic\n');
+    fprintf('Fit: %s Division-%d part %d\n', singleFit.patientID, ...
+        singleFit.division, singleFit.part);
+    fprintf('B size: %dx%d; real: %d\n', singleFit.BDimensions(1), ...
+        singleFit.BDimensions(2), singleFit.isReal);
+    fprintf('Active components (%d): %s\n', singleFit.nComponents, ...
+        strjoin(singleFit.componentNames, ', '));
+    fprintf(['H rank %d/%d, cond %.9g, eigenvalue range ', ...
+        '[%.9g, %.9g], positive definite %d\n'], ...
+        h.rankH, h.sizeH(1), h.conditionNumber, h.minimumEigenvalue, ...
+        h.maximumEigenvalue, h.positiveDefinite);
+    fprintf(['Direct comparison: r %.6f, RMSE %.6f, MAD %.6f, ', ...
+        'medianAD %.6f, meanDiff %.6f, maxAD %.6f, sign %.6f\n'], ...
+        c.matrixCorrelation, c.RMSE, c.MAD, c.medianAbsoluteDifference, ...
+        c.meanSignedDifference, c.maximumAbsoluteDifference, c.signAgreement);
+    fprintf('Global off-diagonal sign inversion: r %.6f, RMSE %.6f, sign %.6f\n', ...
+        signCheck.matrixCorrelation, signCheck.RMSE, signCheck.signAgreement);
+    fprintf('Raw-vs-normalized column R max difference: %.9g (equivalent: %d)\n', ...
+        scaling.maximumAbsoluteCorrelationDifference, ...
+        scaling.equivalentWithinTolerance);
+    fprintf('Interpretation case: %s\n', singleFit.interpretationCase);
+    disp(singleFit.discrepancyTable)
 end
 
 
