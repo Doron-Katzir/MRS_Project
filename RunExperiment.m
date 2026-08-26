@@ -103,6 +103,26 @@ deGraafOutputs = DeGraafAmplitudeCorrelationByPatient(cfg);
 % deGraafOutputs.patientResultsByID.P11.meanAmplitudeCovTable
 
 
+%% Diagnostic: basis-derived covariance geometry vs current model summaries
+% This is isolated from the production pairwise and Wishart analyses. It
+% does not add a baseline and does not substitute a basis-derived matrix into
+% either statistical test.
+
+basisCRLBCfg = struct();
+basisCRLBCfg.patientIDs = "all";
+basisCRLBCfg.detailedPatientID = "P01";
+basisCRLBCfg.division = 1;
+basisCRLBCfg.makeFigures = false;
+basisCRLBCfg.makeGroupFigures = true;
+basisCRLBCfg.saveFigures = true;
+basisCRLBCfg.closeFigures = true;
+basisCRLBCfg.figureVisible = "off";
+basisCRLBCfg.outputDir = fullfile(cfg.paths.rootDir, "BasisCRLBDiagnostics");
+
+crlbBasisDiagnostics = CompareBasisCRLBToCurrentModels( ...
+    covOutputs, deGraafOutputs, cfg, basisCRLBCfg);
+
+
 
 %% Show De Graaf amplitude correlation matrix as image
 
