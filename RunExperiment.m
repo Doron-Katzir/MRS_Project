@@ -103,6 +103,31 @@ deGraafOutputs = DeGraafAmplitudeCorrelationByPatient(cfg);
 % deGraafOutputs.patientResultsByID.P11.meanAmplitudeCovTable
 
 
+%% Diagnostic: basis-derived covariance geometry vs current model summaries
+% This is isolated from the production pairwise and Wishart analyses. It
+% does not add a baseline and does not substitute a basis-derived matrix into
+% either statistical test.
+
+basisCRLBCfg = struct();
+basisCRLBCfg.patientIDs = "all";
+basisCRLBCfg.detailedPatientID = "P01";
+basisCRLBCfg.division = 1;
+basisCRLBCfg.makeFigures = false;
+basisCRLBCfg.makeGroupFigures = true;
+basisCRLBCfg.makeSingleFitDiagnostic = true;
+basisCRLBCfg.makeSingleFitFigures = true;
+basisCRLBCfg.singleFitPatientID = "P01";
+basisCRLBCfg.singleFitDivision = 1;
+basisCRLBCfg.singleFitPart = 1;
+basisCRLBCfg.saveFigures = true;
+basisCRLBCfg.closeFigures = true;
+basisCRLBCfg.figureVisible = "off";
+basisCRLBCfg.outputDir = fullfile(cfg.paths.rootDir, "BasisCRLBDiagnostics");
+
+crlbBasisDiagnostics = CompareBasisCRLBToCurrentModels( ...
+    covOutputs, deGraafOutputs, cfg, basisCRLBCfg);
+
+
 
 %% Show De Graaf amplitude correlation matrix as image
 
@@ -372,6 +397,37 @@ disp(wishart.modes.modeC.summaryTable)
 % Run test.
 pairwise = ProjectStatistics.PairwiseEmpiricalVsModel( ...
     analysisData.pairwise, statsCfg.pairwise);
+
+%% Parallel post-fit basis pairwise experiments (Division 1 only)
+% This diagnostic reuses the centrally filtered empirical pairwise view and
+% the existing pairwise statistical implementation. It does not replace or
+% mutate pairwise, baselineAdjustedPairOutputs, Wishart, DeGraaf, or LCModel
+% outputs. The same fitted component matrix is used in both branches; the
+% second branch adds only that part's fitted baseline before inversion.
+
+basisPairCfg = struct();
+basisPairCfg.patientIDs = "all";
+basisPairCfg.division = 1;
+basisPairCfg.expectedPatientCount = 53;
+basisPairCfg.expectedParts = (1:36).';
+basisPairCfg.exportResults = true;
+basisPairCfg.makeFigures = true;
+basisPairCfg.figureVisible = "off";
+basisPairCfg.closeFigures = true;
+basisPairCfg.noBaselineOutputDir = fullfile( ...
+    cfg.paths.rootDir, "PairwiseBasisModel_NoBaseline");
+basisPairCfg.withBaselineOutputDir = fullfile( ...
+    cfg.paths.rootDir, "PairwiseBasisModel_WithBaseline");
+basisPairCfg.comparisonOutputDir = fullfile( ...
+    cfg.paths.rootDir, "PairwiseBasisModel_Comparison");
+
+basisPairDiagnostics = AnalyzePostFitBasisPairwise( ...
+    covOutputs, deGraafOutputs, analysisData, statsCfg.pairwise, cfg, basisPairCfg);
+
+basisNoBaselinePairOutputs = ...
+    basisPairDiagnostics.basisNoBaselinePairOutputs;
+basisWithBaselinePairOutputs = ...
+    basisPairDiagnostics.basisWithBaselinePairOutputs;
 
 %% Display results
 
