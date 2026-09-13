@@ -262,6 +262,7 @@ end
 rng(monteCarloSeed, "twister");
 
 muHatMC = nan(nMonteCarlo, 1);
+tau2HatMC = nan(nMonteCarlo, 1);
 sigma2HatMC = nan(nMonteCarlo, 1);
 exitFlagMC = nan(nMonteCarlo, 1);
 successfulFitMC = false(nMonteCarlo, 1);
@@ -280,6 +281,7 @@ for r = 1:nMonteCarlo
         fitMC = FitMarginalGaussianIID(SMC, b, optimizerOptionsMC);
 
         muHatMC(r) = fitMC.muHat;
+        tau2HatMC(r) = fitMC.tau2Hat;
         sigma2HatMC(r) = fitMC.sigma2Hat;
         exitFlagMC(r) = fitMC.exitFlag;
 
@@ -342,6 +344,51 @@ meanZSigma2 = mean(zSigma2);
 varZSigma2 = var(zSigma2, 0);
 mcSeMeanSigma2 = sdSigma2Hat / sqrt(nSuccessfulFits);
 
+% Use the same successful joint fits to study tau^2. Unlike mu and sigma^2,
+% the interior ML estimator of tau^2 is downward biased at finite T. We
+% therefore compare its empirical bias, variance, and MSE with their
+% finite-sample predictions rather than report an ordinary CRLB efficiency.
+tau2HatMCSuccessful = tau2HatMC(successfulFitMC);
+trueTau2 = tauTrue^2;
+meanTau2Hat = mean(tau2HatMCSuccessful);
+biasTau2 = meanTau2Hat - trueTau2;
+varTau2Hat = var(tau2HatMCSuccessful, 0); % Sample normalization: 1/(R-1)
+sdTau2Hat = std(tau2HatMCSuccessful, 0);
+mseTau2 = mean((tau2HatMCSuccessful - trueTau2).^2);
+mcSeMeanTau2 = sdTau2Hat / sqrt(nSuccessfulFits);
+
+vTrue = tauTrue^2 + sigmaTrue^2 / q;
+biasTau2Analytic = -vTrue / T;
+expectedTau2HatAnalytic = trueTau2 + biasTau2Analytic;
+varTau2Analytic = 2 * (T - 1) / T^2 * vTrue^2 ...
+    + 2 * sigmaTrue^4 / (T * (K - 1) * q^2);
+mseTau2Analytic = varTau2Analytic + biasTau2Analytic^2;
+meanErrorVsPrediction = meanTau2Hat - expectedTau2HatAnalytic;
+
+biasRatio = biasTau2 / biasTau2Analytic;
+varianceRatio = varTau2Hat / varTau2Analytic;
+mseRatio = mseTau2 / mseTau2Analytic;
+
+% The log parameterization keeps tau^2 strictly positive. Values at or below
+% this documented numerical threshold are classified as boundary-near. The
+% interior finite-sample formulas cease to be exact if such estimates occur
+% frequently.
+tau2BoundaryThreshold = 1e-6;
+isTau2BoundaryNear = tau2HatMCSuccessful <= tau2BoundaryThreshold;
+nTau2BoundaryNear = sum(isTau2BoundaryNear);
+percentTau2BoundaryNear = 100 * nTau2BoundaryNear / nSuccessfulFits;
+
+% This is the ordinary CRLB for UNBIASED estimators of tau^2. Since the ML
+% estimator studied here is biased at finite T, CRLB_tau2/varTau2Hat is not
+% an appropriate efficiency measure. The bound is printed only as a
+% theoretical variance reference while bias, variance, and MSE are assessed.
+crlbTau2Unbiased = (2 / T) * (vTrue^2 ...
+    + sigmaTrue^4 / (q^2 * (K - 1)));
+
+% The predicted bias magnitude is vTrue/T, so it decreases as 1/T. A later
+% experiment could check this at T = 36, 50, 100, and 200; no additional
+% simulations or fits are performed here.
+
 fprintf("\nMonte Carlo validation of mu estimator against CRLB\n");
 fprintf("Requested repetitions              = %d\n", nMonteCarlo);
 fprintf("Successful fits                    = %d\n", nSuccessfulFits);
@@ -377,6 +424,42 @@ fprintf("Efficiency (CRLB / empirical var) = %.8f\n", efficiencySigma2);
 fprintf("Mean normalized estimate zSigma2   = %.8f\n", meanZSigma2);
 fprintf("Variance of zSigma2                = %.8f\n", varZSigma2);
 fprintf("Monte Carlo SE of mean(sigma2Hat)  = %.8f\n", mcSeMeanSigma2);
+
+% Agreement of the empirical and analytical bias, variance, and MSE shows
+% whether the numerical joint ML estimator follows finite-sample theory.
+% Ratios near one indicate agreement; biasRatio should not be overinterpreted
+% in settings where the predicted bias is extremely close to zero.
+fprintf("\nFinite-sample validation of tau^2 ML estimator\n");
+fprintf("True tau^2                              = %.8f\n", trueTau2);
+fprintf("Monte Carlo mean tau^2 estimate         = %.8f\n", meanTau2Hat);
+fprintf("Analytical expected tau^2 estimate      = %.8f\n", ...
+    expectedTau2HatAnalytic);
+fprintf("Mean error versus analytical prediction = %.8f\n", ...
+    meanErrorVsPrediction);
+fprintf("Empirical bias                          = %.8f\n", biasTau2);
+fprintf("Analytical bias                         = %.8f\n", ...
+    biasTau2Analytic);
+fprintf("Bias ratio (empirical / analytical)     = %.8f\n", biasRatio);
+fprintf("Empirical variance                      = %.8g\n", varTau2Hat);
+fprintf("Analytical variance                     = %.8g\n", ...
+    varTau2Analytic);
+fprintf("Variance ratio (empirical / analytical) = %.8f\n", ...
+    varianceRatio);
+fprintf("Empirical MSE                           = %.8g\n", mseTau2);
+fprintf("Analytical MSE                          = %.8g\n", ...
+    mseTau2Analytic);
+fprintf("MSE ratio (empirical / analytical)      = %.8f\n", mseRatio);
+fprintf("Empirical SD                            = %.8f\n", sdTau2Hat);
+fprintf("Monte Carlo SE of mean(tau2Hat)         = %.8f\n", ...
+    mcSeMeanTau2);
+fprintf("Ordinary CRLB for unbiased estimators   = %.8g\n", ...
+    crlbTau2Unbiased);
+fprintf("Successful fits                         = %d\n", nSuccessfulFits);
+fprintf("Failed fits                             = %d\n", nFailedFits);
+fprintf("Boundary-near threshold                 = %.1e\n", ...
+    tau2BoundaryThreshold);
+fprintf("Boundary-near tau^2 estimates           = %d (%.4f%%)\n", ...
+    nTau2BoundaryNear, percentTau2BoundaryNear);
 
 % Histogram of the numerical ML estimates, with the Gaussian density
 % predicted by N(muTrue, CRLB_mu). The density is written explicitly, so no
@@ -461,6 +544,44 @@ xline(0, "r--", "Zero", "LineWidth", 1.5, ...
 xlabel("z_{\sigma^2} = (\hat{\sigma}^2 - \sigma_{true}^2) / sqrt(CRLB_{\sigma^2})");
 ylabel("Probability density");
 title("Normalized numerical joint ML estimates of \sigma^2");
+legend("Location", "best");
+grid on;
+
+% The tau^2 histogram displays the finite-sample downward shift directly.
+figure("Name", "Monte Carlo distribution of tau2Hat", "Color", "w");
+histogram(tau2HatMCSuccessful, nHistogramBins, ...
+    "FaceColor", [0.35, 0.70, 0.70], "DisplayName", "Joint ML estimates");
+hold on;
+xline(trueTau2, "r--", "True \tau^2", "LineWidth", 1.7, ...
+    "DisplayName", "True \tau^2");
+xline(meanTau2Hat, "b-.", "Monte Carlo mean", "LineWidth", 1.7, ...
+    "DisplayName", "Monte Carlo mean");
+xline(expectedTau2HatAnalytic, "k:", "Analytical E[\hat{\tau}^2]", ...
+    "LineWidth", 2, "DisplayName", "Analytical expected value");
+xlabel("Numerical joint ML estimate \hat{\tau}^2");
+ylabel("Number of Monte Carlo estimates");
+title("Finite-sample distribution of \hat{\tau}^2");
+legend("Location", "best");
+grid on;
+
+% The error histogram compares the observed mean error with the predicted
+% finite-sample bias. Their agreement is more relevant here than comparison
+% of the biased estimator variance with the ordinary unbiased CRLB.
+tau2EstimationError = tau2HatMCSuccessful - trueTau2;
+
+figure("Name", "Monte Carlo tau2 estimation error", "Color", "w");
+histogram(tau2EstimationError, nHistogramBins, ...
+    "FaceColor", [0.85, 0.55, 0.35], "DisplayName", "Estimation errors");
+hold on;
+xline(0, "r--", "Zero error", "LineWidth", 1.7, ...
+    "DisplayName", "Zero error");
+xline(biasTau2, "b-.", "Empirical mean error", "LineWidth", 1.7, ...
+    "DisplayName", "Empirical bias");
+xline(biasTau2Analytic, "k:", "Analytical bias", "LineWidth", 2, ...
+    "DisplayName", "Analytical bias");
+xlabel("\hat{\tau}^2 - \tau_{true}^2");
+ylabel("Number of Monte Carlo estimates");
+title("Finite-sample estimation error of \hat{\tau}^2");
 legend("Location", "best");
 grid on;
 
