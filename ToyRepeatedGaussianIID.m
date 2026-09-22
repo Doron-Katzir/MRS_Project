@@ -585,6 +585,304 @@ title("Finite-sample estimation error of \hat{\tau}^2");
 legend("Location", "best");
 grid on;
 
+%% 13. Effect of number of repeated measurements T
+
+% This experiment combines analytical finite-sample predictions with Monte
+% Carlo fits at several values of T. Increasing T supplies more independent
+% realizations of c_t and therefore more information about the population
+% parameters. The basis, K, and all true parameters remain unchanged.
+TValues = [12, 18, 24, 36, 50, 72, 100, 200];
+nMonteCarloT = 500;
+monteCarloTSeed = 456;
+
+TGrid = TValues(:);
+nTValues = numel(TGrid);
+qT = b.' * b;
+vTrueT = tauTrue^2 + sigmaTrue^2 / qT;
+trueTau2T = tauTrue^2;
+trueSigma2T = sigmaTrue^2;
+
+% Analytical predictions. The variances of mu and sigma^2 decrease as 1/T.
+% Noise estimation is especially precise because each spectrum supplies K-1
+% directions orthogonal to b. In contrast, tau^2 describes between-time
+% concentration variability and is fundamentally learned from only T draws.
+muBiasAnalyticT = zeros(nTValues, 1);
+muVarianceAnalyticT = vTrueT ./ TGrid;
+muMSEAnalyticT = muVarianceAnalyticT;
+
+sigma2BiasAnalyticT = zeros(nTValues, 1);
+sigma2VarianceAnalyticT = 2 * sigmaTrue^4 ./ (TGrid * (K - 1));
+sigma2MSEAnalyticT = sigma2VarianceAnalyticT;
+
+% The interior ML bias of tau^2 falls as 1/T, while its standard deviation
+% falls approximately as 1/sqrt(T).
+tau2BiasAnalyticT = -vTrueT ./ TGrid;
+tau2ExpectedAnalyticT = trueTau2T + tau2BiasAnalyticT;
+tau2VarianceAnalyticT = 2 * (TGrid - 1) ./ TGrid.^2 * vTrueT^2 ...
+    + 2 * sigmaTrue^4 ./ (TGrid * (K - 1) * qT^2);
+tau2MSEAnalyticT = tau2VarianceAnalyticT + tau2BiasAnalyticT.^2;
+crlbTau2UnbiasedT = (2 ./ TGrid) .* (vTrueT^2 ...
+    + sigmaTrue^4 / (qT^2 * (K - 1)));
+
+tau2RelativeBiasAnalyticT = abs(tau2BiasAnalyticT) / trueTau2T;
+tau2RelativeSDAnalyticT = sqrt(tau2VarianceAnalyticT) / trueTau2T;
+tau2RelativeRMSEAnalyticT = sqrt(tau2MSEAnalyticT) / trueTau2T;
+
+% Preallocate empirical summaries, one entry for each value of T.
+muBiasEmpiricalT = nan(nTValues, 1);
+muVarianceEmpiricalT = nan(nTValues, 1);
+muMSEEmpiricalT = nan(nTValues, 1);
+
+sigma2BiasEmpiricalT = nan(nTValues, 1);
+sigma2VarianceEmpiricalT = nan(nTValues, 1);
+sigma2MSEEmpiricalT = nan(nTValues, 1);
+
+tau2BiasEmpiricalT = nan(nTValues, 1);
+tau2VarianceEmpiricalT = nan(nTValues, 1);
+tau2MSEEmpiricalT = nan(nTValues, 1);
+tau2RelativeBiasEmpiricalT = nan(nTValues, 1);
+tau2RelativeSDEmpiricalT = nan(nTValues, 1);
+tau2RelativeRMSEEmpiricalT = nan(nTValues, 1);
+
+nSuccessfulFitsT = zeros(nTValues, 1);
+nFailedFitsT = zeros(nTValues, 1);
+nTau2BoundaryNearT = zeros(nTValues, 1);
+
+rng(monteCarloTSeed, "twister");
+optimizerOptionsT = optimset(optimizerOptions, "Display", "off");
+
+for tIndex = 1:nTValues
+    TCurrent = TGrid(tIndex);
+
+    muEstimateCurrent = nan(nMonteCarloT, 1);
+    tau2EstimateCurrent = nan(nMonteCarloT, 1);
+    sigma2EstimateCurrent = nan(nMonteCarloT, 1);
+    successfulCurrent = false(nMonteCarloT, 1);
+
+    for r = 1:nMonteCarloT
+        cTrueCurrent = muTrue + tauTrue * randn(TCurrent, 1);
+        SCurrent = b * cTrueCurrent.' ...
+            + sigmaTrue * randn(K, TCurrent);
+
+        try
+            % Use the same numerical joint ML estimator as Sections 5-6 and
+            % 12; no analytical shortcut replaces the fitted estimates.
+            fitCurrent = FitMarginalGaussianIID( ...
+                SCurrent, b, optimizerOptionsT);
+
+            muEstimateCurrent(r) = fitCurrent.muHat;
+            tau2EstimateCurrent(r) = fitCurrent.tau2Hat;
+            sigma2EstimateCurrent(r) = fitCurrent.sigma2Hat;
+
+            successfulCurrent(r) = fitCurrent.exitFlag > 0 ...
+                && all(isfinite(fitCurrent.thetaHat)) ...
+                && all(isfinite([fitCurrent.muHat, ...
+                    fitCurrent.tau2Hat, fitCurrent.sigma2Hat])) ...
+                && fitCurrent.tau2Hat > 0 && fitCurrent.sigma2Hat > 0 ...
+                && isfinite(fitCurrent.negativeLogLikelihood);
+        catch
+            successfulCurrent(r) = false;
+        end
+    end
+
+    nSuccessfulFitsT(tIndex) = sum(successfulCurrent);
+    nFailedFitsT(tIndex) = nMonteCarloT - nSuccessfulFitsT(tIndex);
+
+    if nSuccessfulFitsT(tIndex) < 2
+        warning("Fewer than two successful fits for T = %d.", TCurrent);
+        continue;
+    end
+
+    muSuccessful = muEstimateCurrent(successfulCurrent);
+    tau2Successful = tau2EstimateCurrent(successfulCurrent);
+    sigma2Successful = sigma2EstimateCurrent(successfulCurrent);
+
+    muBiasEmpiricalT(tIndex) = mean(muSuccessful) - muTrue;
+    muVarianceEmpiricalT(tIndex) = var(muSuccessful, 0);
+    muMSEEmpiricalT(tIndex) = mean((muSuccessful - muTrue).^2);
+
+    sigma2BiasEmpiricalT(tIndex) = mean(sigma2Successful) - trueSigma2T;
+    sigma2VarianceEmpiricalT(tIndex) = var(sigma2Successful, 0);
+    sigma2MSEEmpiricalT(tIndex) = mean( ...
+        (sigma2Successful - trueSigma2T).^2);
+
+    tau2BiasEmpiricalT(tIndex) = mean(tau2Successful) - trueTau2T;
+    tau2VarianceEmpiricalT(tIndex) = var(tau2Successful, 0);
+    tau2MSEEmpiricalT(tIndex) = mean( ...
+        (tau2Successful - trueTau2T).^2);
+    tau2RelativeBiasEmpiricalT(tIndex) = ...
+        abs(tau2BiasEmpiricalT(tIndex)) / trueTau2T;
+    tau2RelativeSDEmpiricalT(tIndex) = ...
+        sqrt(tau2VarianceEmpiricalT(tIndex)) / trueTau2T;
+    tau2RelativeRMSEEmpiricalT(tIndex) = ...
+        sqrt(tau2MSEEmpiricalT(tIndex)) / trueTau2T;
+
+    nTau2BoundaryNearT(tIndex) = sum( ...
+        tau2Successful <= tau2BoundaryThreshold);
+end
+
+% One row per T summarizes both the Monte Carlo results and their analytical
+% targets. CRLB_tau2_unbiased is a reference only, not an efficiency measure
+% for the biased finite-sample ML estimator.
+tScalingSummary = table( ...
+    TGrid, ...
+    muBiasEmpiricalT, muVarianceEmpiricalT, muVarianceAnalyticT, ...
+    muMSEEmpiricalT, ...
+    sigma2BiasEmpiricalT, sigma2VarianceEmpiricalT, ...
+    sigma2VarianceAnalyticT, sigma2MSEEmpiricalT, ...
+    tau2BiasEmpiricalT, tau2BiasAnalyticT, ...
+    tau2VarianceEmpiricalT, tau2VarianceAnalyticT, ...
+    tau2MSEEmpiricalT, tau2MSEAnalyticT, crlbTau2UnbiasedT, ...
+    tau2RelativeBiasEmpiricalT, tau2RelativeBiasAnalyticT, ...
+    tau2RelativeSDEmpiricalT, tau2RelativeSDAnalyticT, ...
+    tau2RelativeRMSEEmpiricalT, tau2RelativeRMSEAnalyticT, ...
+    nTau2BoundaryNearT, nSuccessfulFitsT, nFailedFitsT, ...
+    VariableNames=[ ...
+        "T", ...
+        "muBias_MC", "muVariance_MC", "muVariance_CRLB", "muMSE_MC", ...
+        "sigma2Bias_MC", "sigma2Variance_MC", "sigma2Variance_CRLB", ...
+        "sigma2MSE_MC", ...
+        "tau2Bias_MC", "tau2Bias_Analytic", ...
+        "tau2Variance_MC", "tau2Variance_Analytic", ...
+        "tau2MSE_MC", "tau2MSE_Analytic", "tau2CRLB_Unbiased", ...
+        "tau2RelativeBias_MC", "tau2RelativeBias_Analytic", ...
+        "tau2RelativeSD_MC", "tau2RelativeSD_Analytic", ...
+        "tau2RelativeRMSE_MC", "tau2RelativeRMSE_Analytic", ...
+        "nTau2BoundaryNear", "nSuccessfulFits", "nFailedFits"]);
+
+fprintf("\nEffect of number of repeated measurements T\n");
+disp(tScalingSummary);
+
+% Figure 1: mu variance and its CRLB.
+figure("Name", "Effect of T on mu variance", "Color", "w");
+plot(TGrid, muVarianceAnalyticT, "k-o", "LineWidth", 1.8, ...
+    "DisplayName", "Analytical CRLB");
+hold on;
+plot(TGrid, muVarianceEmpiricalT, "b-s", "LineWidth", 1.5, ...
+    "DisplayName", "Monte Carlo variance");
+xlabel("Number of repeated spectra T");
+ylabel("Variance of \hat{\mu}");
+title("Precision of population-mean estimation versus T");
+legend("Location", "best");
+grid on;
+
+% Figure 2: sigma^2 variance and its CRLB.
+figure("Name", "Effect of T on sigma2 variance", "Color", "w");
+plot(TGrid, sigma2VarianceAnalyticT, "k-o", "LineWidth", 1.8, ...
+    "DisplayName", "Analytical CRLB");
+hold on;
+plot(TGrid, sigma2VarianceEmpiricalT, "b-s", "LineWidth", 1.5, ...
+    "DisplayName", "Monte Carlo variance");
+xlabel("Number of repeated spectra T");
+ylabel("Variance of \hat{\sigma}^2");
+title("Precision of spectral-noise variance estimation versus T");
+legend("Location", "best");
+grid on;
+
+% Figure 3: the approximately 1/T finite-sample bias of tau^2.
+figure("Name", "Effect of T on tau2 bias", "Color", "w");
+plot(TGrid, tau2BiasAnalyticT, "k-o", "LineWidth", 1.8, ...
+    "DisplayName", "Analytical bias");
+hold on;
+plot(TGrid, tau2BiasEmpiricalT, "b-s", "LineWidth", 1.5, ...
+    "DisplayName", "Monte Carlo bias");
+yline(0, "r--", "Zero bias", "LineWidth", 1.2, ...
+    "DisplayName", "Zero");
+xlabel("Number of repeated spectra T");
+ylabel("Bias of \hat{\tau}^2");
+title("Finite-sample ML bias of \tau^2 versus T");
+legend("Location", "best");
+grid on;
+
+% Figure 4: tau^2 variance. The ordinary unbiased CRLB is shown only as a
+% reference and is not used to define efficiency for the biased ML estimator.
+figure("Name", "Effect of T on tau2 variance", "Color", "w");
+plot(TGrid, tau2VarianceAnalyticT, "k-o", "LineWidth", 1.8, ...
+    "DisplayName", "Analytical ML variance");
+hold on;
+plot(TGrid, tau2VarianceEmpiricalT, "b-s", "LineWidth", 1.5, ...
+    "DisplayName", "Monte Carlo ML variance");
+plot(TGrid, crlbTau2UnbiasedT, "r--^", "LineWidth", 1.4, ...
+    "DisplayName", "Ordinary unbiased-estimator CRLB");
+xlabel("Number of repeated spectra T");
+ylabel("Variance of \hat{\tau}^2");
+title("Population-variance estimation uncertainty versus T");
+legend("Location", "best");
+grid on;
+
+% Figure 5: tau^2 MSE combines finite-sample bias and variance.
+figure("Name", "Effect of T on tau2 MSE", "Color", "w");
+plot(TGrid, tau2MSEAnalyticT, "k-o", "LineWidth", 1.8, ...
+    "DisplayName", "Analytical MSE");
+hold on;
+plot(TGrid, tau2MSEEmpiricalT, "b-s", "LineWidth", 1.5, ...
+    "DisplayName", "Monte Carlo MSE");
+xlabel("Number of repeated spectra T");
+ylabel("MSE of \hat{\tau}^2");
+title("Mean-squared error of \tau^2 estimation versus T");
+legend("Location", "best");
+grid on;
+
+% Figure 6: relative RMSE directly quantifies uncertainty compared with the
+% true population variance. T=36 is highlighted because it is the repeated
+% scan count in the current MRS dataset; adequacy depends on required precision.
+figure("Name", "Relative uncertainty of tau2 versus T", "Color", "w");
+plot(TGrid, 100 * tau2RelativeRMSEAnalyticT, "k-o", ...
+    "LineWidth", 1.8, "DisplayName", "Analytical relative RMSE");
+hold on;
+plot(TGrid, 100 * tau2RelativeRMSEEmpiricalT, "b-s", ...
+    "LineWidth", 1.5, "DisplayName", "Monte Carlo relative RMSE");
+xline(36, "r--", "T = 36", "LineWidth", 1.5, ...
+    "DisplayName", "Current MRS T");
+xlabel("Number of repeated spectra T");
+ylabel("RMSE relative to true \tau^2 (%)");
+title("Relative uncertainty of population-variance estimation");
+legend("Location", "best");
+grid on;
+
+% Focused quantitative report for the current MRS repeat count. No binary
+% claim is made about whether 36 is enough; these values allow adequacy to be
+% judged against the precision required by the scientific application.
+t36Index = find(TGrid == 36, 1);
+if ~isempty(t36Index)
+    fprintf("\nFocused results for T = 36\n");
+    fprintf("MU:\n");
+    fprintf("  Monte Carlo SD             = %.8f\n", ...
+        sqrt(muVarianceEmpiricalT(t36Index)));
+    fprintf("  Analytical CRLB SD         = %.8f\n", ...
+        sqrt(muVarianceAnalyticT(t36Index)));
+    fprintf("SIGMA^2:\n");
+    fprintf("  Monte Carlo SD             = %.8f\n", ...
+        sqrt(sigma2VarianceEmpiricalT(t36Index)));
+    fprintf("  Analytical CRLB SD         = %.8f\n", ...
+        sqrt(sigma2VarianceAnalyticT(t36Index)));
+    fprintf("TAU^2:\n");
+    fprintf("  Monte Carlo bias           = %.8f\n", ...
+        tau2BiasEmpiricalT(t36Index));
+    fprintf("  Analytical expected bias   = %.8f\n", ...
+        tau2BiasAnalyticT(t36Index));
+    fprintf("  Monte Carlo SD             = %.8f\n", ...
+        sqrt(tau2VarianceEmpiricalT(t36Index)));
+    fprintf("  Analytical SD              = %.8f\n", ...
+        sqrt(tau2VarianceAnalyticT(t36Index)));
+    fprintf("  Monte Carlo RMSE           = %.8f\n", ...
+        sqrt(tau2MSEEmpiricalT(t36Index)));
+    fprintf("  Analytical RMSE            = %.8f\n", ...
+        sqrt(tau2MSEAnalyticT(t36Index)));
+    fprintf("  Monte Carlo relative bias  = %.2f%% of true tau^2\n", ...
+        100 * tau2RelativeBiasEmpiricalT(t36Index));
+    fprintf("  Analytical relative bias   = %.2f%% of true tau^2\n", ...
+        100 * tau2RelativeBiasAnalyticT(t36Index));
+    fprintf("  Monte Carlo relative SD    = %.2f%% of true tau^2\n", ...
+        100 * tau2RelativeSDEmpiricalT(t36Index));
+    fprintf("  Analytical relative SD     = %.2f%% of true tau^2\n", ...
+        100 * tau2RelativeSDAnalyticT(t36Index));
+    fprintf("  Monte Carlo relative RMSE  = %.2f%% of true tau^2\n", ...
+        100 * tau2RelativeRMSEEmpiricalT(t36Index));
+    fprintf("  Analytical relative RMSE   = %.2f%% of true tau^2\n", ...
+        100 * tau2RelativeRMSEAnalyticT(t36Index));
+end
+
 %% Local fitting and likelihood functions
 
 function fit = FitMarginalGaussianIID(S, b, optimizerOptions)
