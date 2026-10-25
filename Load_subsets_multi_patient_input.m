@@ -56,11 +56,13 @@ for pIdx = 1:height(patients)
     fprintf('Filename prefix: %s\n', filePrefix);
 
     coordStageTimer = tic;
-    [quant, fitData, coordFiles, badCoordTable, cacheEvent] = ReadPatientCoordCached( ...
+    [quant, fitData, coordFiles, badCoordTable, cacheEvent, ...
+        originalData, preFitBasis] = ReadPatientCoordCached( ...
         coordDir, ...
         patientID, ...
         cacheOptions, ...
-        'filePrefix', filePrefix);
+        'filePrefix', filePrefix, ...
+        'includeRawBasis', runOptions.includeRawBasis);
     cacheEvent.coordStageSeconds = toc(coordStageTimer);
     cacheStats = UpdateCoordCacheStats(cacheStats, cacheEvent);
 
@@ -74,6 +76,22 @@ for pIdx = 1:height(patients)
         disp(badCoordTable)
     end
     coordTable = quant.metabTable;
+
+    patientResults(pIdx).patientID = patientID; %#ok<SAGROW>
+    patientResults(pIdx).baseCoordDir = baseCoordDir;
+    patientResults(pIdx).coordDir = coordDir;
+    patientResults(pIdx).filePrefix = filePrefix;
+    patientResults(pIdx).quant = quant;
+    patientResults(pIdx).fitData = fitData;
+    patientResults(pIdx).coordFiles = coordFiles;
+    patientResults(pIdx).badCoordTable = badCoordTable;
+    patientResults(pIdx).coordTable = coordTable;
+    patientResults(pIdx).originalData = originalData;
+    patientResults(pIdx).preFitBasis = preFitBasis;
+
+    if runOptions.loadOnly
+        continue;
+    end
 
     tablesByMetric = BuildTablesByMetric( ...
         coordTable, ...
@@ -91,19 +109,19 @@ for pIdx = 1:height(patients)
         analysisMetabList, ...
         'referenceDivision', referenceDivision);
 
-    patientResults(pIdx).patientID = patientID; %#ok<SAGROW>
-    patientResults(pIdx).baseCoordDir = baseCoordDir;
-    patientResults(pIdx).coordDir = coordDir;
-    patientResults(pIdx).filePrefix = filePrefix;
-    patientResults(pIdx).quant = quant;
-    patientResults(pIdx).fitData = fitData;
-    patientResults(pIdx).coordFiles = coordFiles;
-    patientResults(pIdx).badCoordTable = badCoordTable;
-    patientResults(pIdx).coordTable = coordTable;
     patientResults(pIdx).tablesByMetric = tablesByMetric;
     patientResults(pIdx).modelTableSig = modelTableSig;
     patientResults(pIdx).heteroResultsSig = heteroResultsSig;
     patientResults(pIdx).skippedHeteroTable = skippedHeteroTable;
+end
+
+if runOptions.loadOnly
+    outputs = struct;
+    outputs.runOptions = runOptions;
+    outputs.patients = patients;
+    outputs.patientResults = patientResults;
+    PrintCoordCacheSummary(cacheStats, toc(loaderTimer));
+    return;
 end
 
 %% Single-patient sanity plots for the first patient
@@ -1540,6 +1558,8 @@ function runOptions = ParseRunOptionsFromConfig(cfg, varargin)
     runOptions.loadMode = "allSubfolders";
     runOptions.selectedPatientID = "";
     runOptions.selectedSubfolder = "";
+    runOptions.includeRawBasis = false;
+    runOptions.loadOnly = false;
 
     runOptions.usePatientSubfolders = true;
     runOptions.addPatientPrefixToFilenames = true;
@@ -1625,6 +1645,12 @@ function runOptions = ParseRunOptionsFromConfig(cfg, varargin)
         if HasFieldOrProperty(cfgLoad, "selectedSubfolder")
             runOptions.selectedSubfolder = string(GetFieldOrProperty(cfgLoad, "selectedSubfolder"));
         end
+        if HasFieldOrProperty(cfgLoad, "includeRawBasis")
+            runOptions.includeRawBasis = logical(GetFieldOrProperty(cfgLoad, "includeRawBasis"));
+        end
+        if HasFieldOrProperty(cfgLoad, "loadOnly")
+            runOptions.loadOnly = logical(GetFieldOrProperty(cfgLoad, "loadOnly"));
+        end
     end
 
     p = inputParser;
@@ -1643,6 +1669,8 @@ function runOptions = ParseRunOptionsFromConfig(cfg, varargin)
     p.addParameter('loadMode', runOptions.loadMode, @(x) ischar(x) || isstring(x));
     p.addParameter('selectedPatientID', runOptions.selectedPatientID, @(x) ischar(x) || isstring(x));
     p.addParameter('selectedSubfolder', runOptions.selectedSubfolder, @(x) ischar(x) || isstring(x));
+    p.addParameter('includeRawBasis', runOptions.includeRawBasis, @(x) islogical(x) && isscalar(x));
+    p.addParameter('loadOnly', runOptions.loadOnly, @(x) islogical(x) && isscalar(x));
 
     p.addParameter('usePatientSubfolders', runOptions.usePatientSubfolders, @(x) islogical(x) && isscalar(x));    p.addParameter('addPatientPrefixToFilenames', runOptions.addPatientPrefixToFilenames, @(x) islogical(x) && isscalar(x));
     p.addParameter('deleteOldLCModelFiles', runOptions.deleteOldLCModelFiles, @(x) islogical(x) && isscalar(x));
@@ -1662,6 +1690,8 @@ function runOptions = ParseRunOptionsFromConfig(cfg, varargin)
     runOptions.loadMode = string(p.Results.loadMode);
     runOptions.selectedPatientID = string(p.Results.selectedPatientID);
     runOptions.selectedSubfolder = string(p.Results.selectedSubfolder);
+    runOptions.includeRawBasis = logical(p.Results.includeRawBasis);
+    runOptions.loadOnly = logical(p.Results.loadOnly);
 
     runOptions.usePatientSubfolders = logical(p.Results.usePatientSubfolders);
     runOptions.addPatientPrefixToFilenames = logical(p.Results.addPatientPrefixToFilenames);
