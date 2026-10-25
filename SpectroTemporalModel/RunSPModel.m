@@ -37,18 +37,11 @@ cfg.paths.coordDir = fullfile(cfg.paths.rootDir, "LCMFit");
 % cfg.load.coordDir = cfg.paths.coordDir;
 % 
 
-%% Load all subfolders
+%% Load all subfolders raw, coord & basis files
 
 cfg.load.mode = "allSubfolders";
 cfg.load.coordDir = cfg.paths.coordDir;
+cfg.load.includeRawBasis = true;
+cfg.load.loadOnly = true;
 
-%% Load reference LCModel data
-patientID = "P01";
-coordDir = fullfile(cfg.paths.coordDir, patientID);
-
-cacheOptions = CoordCacheOptions(cfg);
-
-[quant, fitData, coordFiles, badCoordTable, cacheEvent] = ...
-    ReadPatientCoordCached( ...
-        coordDir, patientID, cacheOptions, ...
-        'filePrefix', patientID + "_");
+outputs = Load_subsets_multi_patient_input(cfg);

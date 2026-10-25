@@ -13,16 +13,6 @@ function cfg = ProjectConfig()
     cfg.cache.coord.forceRefresh = false;
     cfg.cache.coord.directory = fullfile(rootDir, "GeneratedCache", "CoordParsing");
 
-    % LCModel-result loading. The optional RAW/basis inputs are stored in the
-    % same per-patient cache as the parsed .coord results. loadOnly stops after
-    % assembling patientResults and does not run the statistical summaries.
-    cfg.load.mode = "allSubfolders";
-    cfg.load.coordDir = cfg.paths.coordDir;
-    cfg.load.selectedPatientID = "";
-    cfg.load.selectedSubfolder = "";
-    cfg.load.includeRawBasis = false;
-    cfg.load.loadOnly = false;
-
     % ---------------------------------------------------------------------
     % Input selection
     % ---------------------------------------------------------------------
