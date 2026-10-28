@@ -279,3 +279,110 @@ title(sprintf("Residual | Relative error: %.1f%%", ...
 grid on;
 
 sgtitle("P01 | Division 36 | Initial Linear Fit");
+
+
+
+%% Shared Lorentzian broadening experiment
+
+dt = patient.preFitBasis.globalHeader.badelt;
+n = size(B, 1);
+t = (0:n-1).' * dt;
+
+% Recover time-domain basis functions
+basisFids = ifft(ifftshift(B, 1), [], 1);
+
+% Candidate linewidths in Hz
+gammaGrid = 0:0.5:30;
+
+errors = zeros(size(gammaGrid));
+fits = cell(size(gammaGrid));
+concentrations = cell(size(gammaGrid));
+
+y = [real(sFit); imag(sFit)];
+
+for k = 1:numel(gammaGrid)
+
+    gamma = gammaGrid(k);
+
+    % Apply Lorentzian broadening in time
+    decay = exp(-pi * gamma * t);
+    broadenedFids = basisFids .* decay;
+
+    % Convert to frequency domain
+    Bgamma = fftshift(fft(broadenedFids, [], 1), 1);
+    BgFit = Bgamma(mask, :);
+
+    % Normalize basis columns
+    scale = sqrt(sum(abs(BgFit).^2, 1));
+    Bnorm = BgFit ./ scale;
+
+    % Solve complex NNLS as a real problem
+    A = [real(Bnorm); imag(Bnorm)];
+    aHat = lsqnonneg(A, y);
+
+    cHat = aHat ./ scale(:);
+    sHat = BgFit * cHat;
+
+    % Store results
+    errors(k) = norm(sFit - sHat) / norm(sFit);
+    fits{k} = sHat;
+    concentrations{k} = cHat;
+
+end
+
+% Find optimal candidate
+[bestError, bestIdx] = min(errors);
+
+bestGamma = gammaGrid(bestIdx);
+bestFit = fits{bestIdx};
+bestC = concentrations{bestIdx};
+
+fprintf('Original error: %.2f%%\n', 100*errors(1));
+fprintf('Best gamma: %.2f Hz\n', bestGamma);
+fprintf('Best error: %.2f%%\n', 100*bestError);
+
+
+figure;
+plot(gammaGrid, 100*errors, 'o-', 'LineWidth', 1.5);
+
+xlabel('Additional Lorentzian linewidth (Hz)');
+ylabel('Relative residual (%)');
+title('Profiled NNLS Residual vs Lorentzian Broadening');
+grid on;
+
+
+%% Compare original and broadened fits
+
+figure('Name', 'Effect of Lorentzian Broadening');
+tiledlayout(3,1);
+
+% Real component
+nexttile;
+plot(ppmFit, real(sFit), 'b', 'LineWidth', 1.2); hold on;
+plot(ppmFit, real(fits{1}), 'r--');
+plot(ppmFit, real(bestFit), 'g', 'LineWidth', 1.2);
+set(gca, 'XDir', 'reverse');
+legend('Measured', 'Original NNLS', 'Broadened NNLS');
+title(sprintf('Real Spectrum | gamma = %.1f Hz', bestGamma));
+grid on;
+
+% Imaginary component
+nexttile;
+plot(ppmFit, imag(sFit), 'b', 'LineWidth', 1.2); hold on;
+plot(ppmFit, imag(fits{1}), 'r--');
+plot(ppmFit, imag(bestFit), 'g', 'LineWidth', 1.2);
+set(gca, 'XDir', 'reverse');
+legend('Measured', 'Original NNLS', 'Broadened NNLS');
+title('Imaginary Spectrum');
+grid on;
+
+% Remaining residual
+nexttile;
+r = sFit - bestFit;
+plot(ppmFit, real(r), 'b'); hold on;
+plot(ppmFit, imag(r), 'r');
+set(gca, 'XDir', 'reverse');
+legend('Real residual', 'Imaginary residual');
+xlabel('Chemical shift (ppm)');
+title(sprintf('Remaining Residual: %.1f%%', 100*bestError));
+grid on;
