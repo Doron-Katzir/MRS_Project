@@ -446,3 +446,68 @@ xlabel("Global phase (degrees)");
 ylabel("Relative residual (%)");
 title("Residual vs Global Phase");
 grid on;
+
+
+%% Joint linewidth and phase grid search
+
+gammaGrid2 = 0:2:24;       % Hz
+phaseGrid2 = -80:5:20;     % degrees
+
+errorMap = zeros(numel(gammaGrid2), numel(phaseGrid2));
+
+y = [real(sFit); imag(sFit)];
+
+for ig = 1:numel(gammaGrid2)
+
+    gamma = gammaGrid2(ig);
+
+    % Apply Lorentzian broadening
+    decay = exp(-pi * gamma * t);
+    Bgamma = fftshift(fft(basisFids .* decay, [], 1), 1);
+    Bg = Bgamma(mask, :);
+
+    % Normalize columns
+    scale = sqrt(sum(abs(Bg).^2, 1));
+    Bnorm = Bg ./ scale;
+
+    for ip = 1:numel(phaseGrid2)
+
+        phi = deg2rad(phaseGrid2(ip));
+
+        % Global phase rotation
+        Brot = exp(1i * phi) * Bnorm;
+
+        % NNLS
+        A = [real(Brot); imag(Brot)];
+        aHat = lsqnonneg(A, y);
+
+        % Relative residual
+        errorMap(ig, ip) = norm(y - A*aHat) / norm(y);
+
+    end
+end
+
+% Joint optimum on the grid
+[bestErrorJoint, linearIdx] = min(errorMap(:));
+[ig, ip] = ind2sub(size(errorMap), linearIdx);
+
+gammaJoint = gammaGrid2(ig);
+phaseJoint = phaseGrid2(ip);
+
+fprintf('Best linewidth: %.1f Hz\n', gammaJoint);
+fprintf('Best phase: %.1f degrees\n', phaseJoint);
+fprintf('Joint residual: %.2f%%\n', 100*bestErrorJoint);
+
+% Visualize the objective surface
+
+figure;
+contourf(phaseGrid2, gammaGrid2, 100*errorMap, 20);
+colorbar;
+hold on;
+plot(phaseJoint, gammaJoint, 'rx', ...
+    'MarkerSize', 12, 'LineWidth', 2);
+
+xlabel('Global phase (degrees)');
+ylabel('Lorentzian linewidth (Hz)');
+title('Joint Profiled NNLS Residual (%)');
+
