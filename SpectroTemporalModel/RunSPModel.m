@@ -386,3 +386,63 @@ legend('Real residual', 'Imaginary residual');
 xlabel('Chemical shift (ppm)');
 title(sprintf('Remaining Residual: %.1f%%', 100*bestError));
 grid on;
+
+
+
+%% Global phase investigation
+
+gamma = bestGamma;
+
+% Construct the broadened basis
+decay = exp(-pi * gamma * t);
+Bbroadened = fftshift(fft(basisFids .* decay, [], 1), 1);
+Bg = Bbroadened(mask, :);
+
+% Normalize columns
+scale = sqrt(sum(abs(Bg).^2, 1));
+BgNorm = Bg ./ scale;
+
+y = [real(sFit); imag(sFit)];
+
+% Candidate global phases (degrees)
+phaseGrid = -180:2:180;
+phaseErrors = zeros(size(phaseGrid));
+phaseFits = cell(size(phaseGrid));
+
+for k = 1:numel(phaseGrid)
+
+    phi = deg2rad(phaseGrid(k));
+
+    % Rotate the complex basis
+    Brot = exp(1i * phi) * BgNorm;
+
+    % Re-estimate concentrations
+    A = [real(Brot); imag(Brot)];
+    aHat = lsqnonneg(A, y);
+
+    cHat = aHat ./ scale(:);
+
+    % Reconstruct
+    sHat = exp(1i * phi) * Bg * cHat;
+
+    phaseFits{k} = sHat;
+    phaseErrors(k) = norm(sFit - sHat) / norm(sFit);
+
+end
+
+[bestPhaseError, idxPhase] = min(phaseErrors);
+bestPhase = phaseGrid(idxPhase);
+bestPhaseFit = phaseFits{idxPhase};
+
+fprintf("Best phase: %.1f degrees\n", bestPhase);
+fprintf("Residual without phase correction: %.2f%%\n", ...
+    100 * phaseErrors(phaseGrid == 0));
+fprintf("Residual with phase correction: %.2f%%\n", ...
+    100 * bestPhaseError);
+
+figure;
+plot(phaseGrid, 100 * phaseErrors, 'LineWidth', 1.5);
+xlabel("Global phase (degrees)");
+ylabel("Relative residual (%)");
+title("Residual vs Global Phase");
+grid on;
