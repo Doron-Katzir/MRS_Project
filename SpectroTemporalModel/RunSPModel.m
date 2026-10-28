@@ -511,3 +511,55 @@ xlabel('Global phase (degrees)');
 ylabel('Lorentzian linewidth (Hz)');
 title('Joint Profiled NNLS Residual (%)');
 
+
+%% Reconstruct the jointly optimized model
+
+decay = exp(-pi * gammaJoint * t);
+
+Bgamma = fftshift(fft(basisFids .* decay, [], 1), 1);
+Bg = Bgamma(mask, :);
+
+phi = deg2rad(phaseJoint);
+Bjoint = exp(1i * phi) * Bg;
+
+scale = vecnorm(Bjoint, 2, 1);
+Bnorm = Bjoint ./ scale;
+
+A = [real(Bnorm); imag(Bnorm)];
+y = [real(sFit); imag(sFit)];
+
+aHat = lsqnonneg(A, y);
+cJoint = aHat ./ scale(:);
+
+sJoint = Bjoint * cJoint;
+rJoint = sFit - sJoint;
+
+% Plot
+
+figure;
+tiledlayout(3,1);
+
+nexttile;
+plot(ppmFit, real(sFit), 'b'); hold on;
+plot(ppmFit, real(sJoint), 'r');
+set(gca, 'XDir', 'reverse');
+legend('Measured', 'Joint fit');
+title('Real Spectrum');
+grid on;
+
+nexttile;
+plot(ppmFit, imag(sFit), 'b'); hold on;
+plot(ppmFit, imag(sJoint), 'r');
+set(gca, 'XDir', 'reverse');
+legend('Measured', 'Joint fit');
+title('Imaginary Spectrum');
+grid on;
+
+nexttile;
+plot(ppmFit, real(rJoint), 'b'); hold on;
+plot(ppmFit, imag(rJoint), 'r');
+set(gca, 'XDir', 'reverse');
+legend('Real residual', 'Imaginary residual');
+title('Remaining Residual');
+xlabel('Chemical shift (ppm)');
+grid on;
