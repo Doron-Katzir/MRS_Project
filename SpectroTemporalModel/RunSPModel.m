@@ -49,7 +49,7 @@ outputs = Load_subsets_multi_patient_input(cfg);
 
 %% Examine signals
 
-%% 1. Select patient and averaged measurement
+% 1. Select patient and averaged measurement
 
 patientIDs = string({outputs.patientResults.patientID});
 p = find(patientIDs == "P01", 1);
@@ -65,11 +65,11 @@ assert(~isempty(idx), "Requested measurement not found.");
 fid = patient.originalData.fids(:, idx);
 n = numel(fid);
 
-%% 2. Convert measured FID to spectrum
+% 2. Convert measured FID to spectrum
 
 S = fftshift(fft(fid));
 
-%% 3. Load original NAA basis and undo zero filling
+% 3. Load original NAA basis and undo zero filling
 
 names = string(patient.preFitBasis.metaboliteNames);
 j = find(names == "NAA", 1);
@@ -97,7 +97,7 @@ tailRatio = norm(bFidPadded(n+1:end)) / ...
 
 fprintf("Zero-filled tail ratio: %.3e\n", tailRatio);
 
-%% 4. Construct chemical shift axis
+% 4. Construct chemical shift axis
 
 hdr = patient.preFitBasis.globalHeader;
 
@@ -114,7 +114,7 @@ ppm = SpinsJ.HzToPPM( ...
 
 mask = ppm >= 0.2 & ppm <= 4.0;
 
-%% 5. Plot everything
+% 5. Plot everything
 
 figure("Name", "MRS Signal Inspection");
 tiledlayout(2,2);
@@ -166,3 +166,116 @@ legend("Measured", "LCModel fit");
 grid on;
 
 sgtitle("Patient P01 | Division 36 | Part 1");
+
+
+%% Build the complete pre-fit basis matrix
+s = fftshift(fft(fid));
+basisStored = patient.preFitBasis.spectra;
+metaboliteNames = string(patient.preFitBasis.metaboliteNames);
+M = numel(metaboliteNames);
+
+B = zeros(n, M);
+
+for j = 1:M
+    if iscell(basisStored)
+        bj = basisStored{j}(:);
+    else
+        bj = basisStored(:, j);
+    end
+
+    % Undo the original twofold zero filling
+    bPadded = ifft(ifftshift(bj));
+    assert(numel(bPadded) == 2*n);
+
+    bFid = bPadded(1:n);
+
+    % Transform to the measured frequency grid
+    B(:, j) = fftshift(fft(bFid));
+end
+
+% Construct ppm axis from acquisition metadata
+hdr = patient.preFitBasis.globalHeader;
+
+SW = 1 / hdr.badelt;
+freqHz = -SW/2 + (0:n-1).' * SW/n;
+
+B0 = hdr.hzpppm / SpinsJ.GetGyromagneticRatio("1H");
+ppm = SpinsJ.HzToPPM(-freqHz, B0, "1H", SpinsJ.waterPPM);
+
+% Select fitting range
+mask = ppm >= 0.2 & ppm <= 4.0;
+
+sFit = s(mask);
+BFit = B(mask, :);
+ppmFit = ppm(mask);
+
+fprintf("Measured spectrum: %d points\n", numel(sFit));
+fprintf("Basis matrix: %d x %d\n", size(BFit));
+
+
+%% Complex nonnegative least squares
+
+% Normalize basis columns for numerical stability
+scale = sqrt(sum(abs(BFit).^2, 1));
+assert(all(isfinite(scale) & scale > 0), ...
+    "Invalid or zero basis column.");
+
+Bnormalized = BFit ./ scale;
+
+% Stack real and imaginary components
+A = [real(Bnormalized); imag(Bnormalized)];
+y = [real(sFit); imag(sFit)];
+
+% Solve nonnegative least squares
+aHat = lsqnonneg(A, y);
+
+% Restore original basis scaling
+cHat = aHat ./ scale(:);
+
+% Reconstruct fitted spectrum
+sHat = BFit * cHat;
+
+% Calculate residual
+residual = sFit - sHat;
+
+relativeError = norm(residual) / norm(sFit);
+
+fprintf("Relative residual: %.2f%%\n", ...
+    100 * relativeError);
+
+
+
+%% Plot measured, fitted, and residual spectra
+
+figure("Name", "First Linear Spectral Fit");
+tiledlayout(3,1);
+
+nexttile;
+plot(ppmFit, real(sFit), 'b'); hold on;
+plot(ppmFit, real(sHat), 'r');
+set(gca, 'XDir', 'reverse');
+ylabel("Real");
+legend("Measured", "NNLS fit");
+title("Real Spectrum");
+grid on;
+
+nexttile;
+plot(ppmFit, imag(sFit), 'b'); hold on;
+plot(ppmFit, imag(sHat), 'r');
+set(gca, 'XDir', 'reverse');
+ylabel("Imaginary");
+title("Imaginary Spectrum");
+grid on;
+
+nexttile;
+plot(ppmFit, real(residual), 'b'); hold on;
+plot(ppmFit, imag(residual), 'r');
+set(gca, 'XDir', 'reverse');
+xlabel("Chemical shift (ppm)");
+ylabel("Residual");
+legend("Real", "Imaginary");
+title(sprintf("Residual | Relative error: %.1f%%", ...
+    100*relativeError));
+grid on;
+
+sgtitle("P01 | Division 36 | Initial Linear Fit");
