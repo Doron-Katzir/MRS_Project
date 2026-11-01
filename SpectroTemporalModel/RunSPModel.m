@@ -48,152 +48,29 @@ outputs = Load_subsets_multi_patient_input(cfg);
 
 
 %% Examine signals
+% Select patients and extract their data
+patientIDs = ["P01"];
+patientClasses = getPatients(outputs, patientIDs);
 
-% 1. Select patient and averaged measurement
+% Get FIDs, spectrums and basis matrices
+[fidSigs, spectrumSigs, sigLengths, basisMat] = extractSignals( ...
+    patientClasses);
 
-patientIDs = string({outputs.patientResults.patientID});
-p = find(patientIDs == "P01", 1);
+% Plotting example
+patientID = "P01";  % Choose patient
+metab = "NAA";  % Choose metab
 
-assert(~isempty(p), "Patient P01 not found.");
-patient = outputs.patientResults(p);
-
-T = patient.originalData.fileTable;
-idx = find(T.division == 36 & T.part == 1, 1);
-
-assert(~isempty(idx), "Requested measurement not found.");
-
-fid = patient.originalData.fids(:, idx);
-n = numel(fid);
-
-% 2. Convert measured FID to spectrum
-
-S = fftshift(fft(fid));
-
-% 3. Load original NAA basis and undo zero filling
-
-names = string(patient.preFitBasis.metaboliteNames);
-j = find(names == "NAA", 1);
-
-assert(~isempty(j), "NAA not found in basis.");
-
-basisStored = patient.preFitBasis.spectra;
-
-if iscell(basisStored)
-    b8192 = basisStored{j}(:);
-else
-    b8192 = basisStored(:, j);
-end
-
-% Reverse the export-time zero filling
-bFidPadded = ifft(ifftshift(b8192));
-assert(numel(bFidPadded) == 2*n);
-
-bFid = bFidPadded(1:n);
-Bnaa = fftshift(fft(bFid));
-
-% Check removed tail is approximately zero
-tailRatio = norm(bFidPadded(n+1:end)) / ...
-            max(norm(bFid), eps);
-
-fprintf("Zero-filled tail ratio: %.3e\n", tailRatio);
-
-% 4. Construct chemical shift axis
-
-hdr = patient.preFitBasis.globalHeader;
-
-dt = hdr.badelt;
-SW = 1 / dt;
-
-freqHz = -SW/2 + (0:n-1).' * (SW/n);
-
-B0 = hdr.hzpppm / ...
-    SpinsJ.GetGyromagneticRatio("1H");
-
-ppm = SpinsJ.HzToPPM( ...
-    -freqHz, B0, "1H", SpinsJ.waterPPM);
-
-mask = ppm >= 0.2 & ppm <= 4.0;
-
-% 5. Plot everything
-
-figure("Name", "MRS Signal Inspection");
-tiledlayout(2,2);
-
-% Measured FID
-nexttile;
-t = (0:n-1).' * dt * 1000;
-plot(t, real(fid), 'b'); hold on;
-plot(t, imag(fid), 'r');
-xlabel("Time (ms)");
-ylabel("Signal");
-title("Measured Complex FID");
-legend("Real", "Imaginary");
-xlim([0 200]); grid on;
-
-% Measured complex spectrum
-nexttile;
-plot(ppm(mask), real(S(mask)), 'b'); hold on;
-plot(ppm(mask), imag(S(mask)), 'r');
-set(gca, 'XDir', 'reverse');
-xlabel("ppm");
-title("Measured Complex Spectrum");
-legend("Real", "Imaginary");
-grid on;
-
-% Measured magnitude vs pre-fit NAA basis
-nexttile;
-sNorm = abs(S) / max(abs(S(mask)));
-bNorm = abs(Bnaa) / max(abs(Bnaa(mask)));
-
-plot(ppm(mask), sNorm(mask), 'b'); hold on;
-plot(ppm(mask), bNorm(mask), 'r');
-set(gca, 'XDir', 'reverse');
-xlabel("ppm");
-title("Measured vs Pre-fit NAA (Magnitude)");
-legend("Measured", "NAA basis");
-grid on;
-
-% LCModel reference
-nexttile;
-F = patient.fitData(idx);
-
-plot(F.axis, F.phasedData, 'b'); hold on;
-plot(F.axis, F.fitData, 'r');
-set(gca, 'XDir', 'reverse');
-xlabel("ppm");
-title("LCModel Result");
-legend("Measured", "LCModel fit");
-grid on;
-
-sgtitle("Patient P01 | Division 36 | Part 1");
+plotFIDSpec(outputs, patientID, metab)
 
 
-%% Build the complete pre-fit basis matrix
-s = fftshift(fft(fid));
-basisStored = patient.preFitBasis.spectra;
-metaboliteNames = string(patient.preFitBasis.metaboliteNames);
-M = numel(metaboliteNames);
+%% Construct ppm axis from acquisition metadata
+patientNum = 1;
+patient = patientClasses{patientNum};
+n = sigLengths(patientNum);
+s = spectrumSigs(1:n, patientNum);
+B = basisMat{patientNum};
 
-B = zeros(n, M);
-
-for j = 1:M
-    if iscell(basisStored)
-        bj = basisStored{j}(:);
-    else
-        bj = basisStored(:, j);
-    end
-
-    % Undo the original twofold zero filling
-    bPadded = ifft(ifftshift(bj));
-    assert(numel(bPadded) == 2*n);
-
-    bFid = bPadded(1:n);
-
-    % Transform to the measured frequency grid
-    B(:, j) = fftshift(fft(bFid));
-end
-
-% Construct ppm axis from acquisition metadata
+% This should be a function!!
 hdr = patient.preFitBasis.globalHeader;
 
 SW = 1 / hdr.badelt;
@@ -204,6 +81,7 @@ ppm = SpinsJ.HzToPPM(-freqHz, B0, "1H", SpinsJ.waterPPM);
 
 % Select fitting range
 mask = ppm >= 0.2 & ppm <= 4.0;
+
 
 sFit = s(mask);
 BFit = B(mask, :);
@@ -839,6 +717,163 @@ sgtitle("P01 | Division 36 | Full Nonlinear Model");
 %% ============================================================
 %  LOCAL FUNCTIONS — keep these at the end of the script
 %  ============================================================
+
+function patients = getPatients(outputs, patientIDs)
+    M = numel(patientIDs);
+    patients = cell(1, M);
+    allPatientIDs = string({outputs.patientResults.patientID});
+    
+    for id = 1:M
+        p = find(allPatientIDs == patientIDs(id), 1);
+        assert(~isempty(p), "Patient %s not found.", patientIDs(id));
+        patients{id} = outputs.patientResults(p);
+    end
+end
+
+function [fidSignals, specSignals, lengths, basisMatrices] = ...
+    extractSignals(patientClasses)
+    N = 10000;  % Pre-allocation maximum value, should later be trimmed using lengths
+    M = numel(patientClasses);
+    lengths = zeros(1, M);
+    fidSignals = complex(zeros(N, M));
+    specSignals = complex(zeros(N, M));
+    basisMatrices = cell(1, M);
+    
+    for p = 1:M
+        patient = patientClasses{p};
+    
+        T = patient.originalData.fileTable;
+        idx = find(T.division == 36 & T.part == 1, 1);
+    
+        assert(~isempty(idx), "Requested measurement not found.");
+    
+        fid = patient.originalData.fids(:, idx);
+        fidLen = numel(fid);
+
+        lengths(p) = fidLen;
+        fidSignals(1: fidLen, p) = fid;
+
+        s = fftshift(fft(fid));
+        specSignals(1:fidLen, p) = s; 
+
+        basisMatrices{p} = getBasis(patient, fidLen);
+
+
+    end
+end
+
+function B = getBasis(patient, n)
+    basisStored = patient.preFitBasis.spectra;
+    metaboliteNames = string(patient.preFitBasis.metaboliteNames);
+    M = numel(metaboliteNames);
+    
+    B = complex(zeros(n, M));
+    
+    for j = 1:M
+        if iscell(basisStored)
+            bj = basisStored{j}(:);
+        else
+            bj = basisStored(:, j);
+        end
+    
+        % Undo the original twofold zero filling
+        bPadded = ifft(ifftshift(bj));
+        assert(numel(bPadded) == 2*n);
+    
+        bFid = bPadded(1:n);
+    
+        % Transform to the measured frequency grid
+        B(:, j) = fftshift(fft(bFid));
+    end
+end
+
+
+function plotFIDSpec(outputs, patientID, metabName)
+    patientToPlot = getPatients(outputs, patientID);
+    [fid, S, length, basisMat] = extractSignals(patientToPlot);
+    
+    n = length(1);
+    fid = fid(1:n);
+    S = S(1:n);
+    
+    patientToPlot = patientToPlot{1};
+    
+    allNames = string(patientToPlot.preFitBasis.metaboliteNames);
+    nameInd = find(allNames == metabName, 1);
+    assert(~isempty(nameInd), metabName + " not found in basis.");
+    bChosenMetab = basisMat{1}(:, nameInd);
+    
+    % Construct chemical shift axis
+    hdr = patientToPlot.preFitBasis.globalHeader;
+    
+    dt = hdr.badelt;
+    SW = 1 / dt;
+    freqHz = -SW/2 + (0:n-1).' * (SW/n);
+    
+    B0 = hdr.hzpppm / ...
+        SpinsJ.GetGyromagneticRatio("1H");
+    
+    ppm = SpinsJ.HzToPPM( ...
+        -freqHz, B0, "1H", SpinsJ.waterPPM);
+    
+    mask = ppm >= 0.2 & ppm <= 4.0;
+    
+    % Plot everything
+    
+    figure("Name", "MRS Signal Inspection");
+    tiledlayout(2,2);
+    
+    % Measured FID
+    nexttile;
+    t = (0:n-1).' * dt * 1000;
+    plot(t, real(fid), 'b'); hold on;
+    plot(t, imag(fid), 'r');
+    xlabel("Time (ms)");
+    ylabel("Signal");
+    title("Measured Complex FID");
+    legend("Real", "Imaginary");
+    xlim([0 200]); grid on;
+    
+    % Measured complex spectrum
+    nexttile;
+    plot(ppm(mask), real(S(mask)), 'b'); hold on;
+    plot(ppm(mask), imag(S(mask)), 'r');
+    set(gca, 'XDir', 'reverse');
+    xlabel("ppm");
+    title("Measured Complex Spectrum");
+    legend("Real", "Imaginary");
+    grid on;
+    
+    % Measured magnitude vs pre-fit NAA basis
+    nexttile;
+    sNorm = abs(S) / max(abs(S(mask)));
+    bNorm = abs(bChosenMetab) / max(abs(bChosenMetab(mask)));
+    
+    plot(ppm(mask), sNorm(mask), 'b'); hold on;
+    plot(ppm(mask), bNorm(mask), 'r');
+    set(gca, 'XDir', 'reverse');
+    xlabel("ppm");
+    title("Measured vs Pre-fit NAA (Magnitude)");
+    legend("Measured", "NAA basis");
+    grid on;
+    
+    % LCModel reference
+    nexttile;
+    T = patientToPlot.originalData.fileTable;
+    idx = find(T.division == 36 & T.part == 1, 1);
+    F = patientToPlot.fitData(idx);
+    
+    plot(F.axis, F.phasedData, 'b'); hold on;
+    plot(F.axis, F.fitData, 'r');
+    set(gca, 'XDir', 'reverse');
+    xlabel("ppm");
+    title("LCModel Result");
+    legend("Measured", "LCModel fit");
+    grid on;
+    
+    sgtitle("Patient P01 | Division 36 | Part 1");
+end
+
 
 function theta = replaceParameters(theta, active, values)
     theta(active) = values(:);
