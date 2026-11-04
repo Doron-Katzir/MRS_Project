@@ -56,7 +56,7 @@ patientClasses = getPatients(outputs, patientIDs);
 [fidSigs, spectrumSigs, sigLengths, basisMat] = extractSignals( ...
     patientClasses);
 
-% Plotting example
+%% Plotting example
 patientID = "P01";  % Choose patient
 metab = "NAA";  % Choose metab
 
@@ -64,95 +64,12 @@ plotFIDSpec(outputs, patientID, metab)
 
 
 %% Construct ppm axis from acquisition metadata
-hdr = patient.preFitBasis.globalHeader;
 
-SW = 1 / hdr.badelt;
-freqHz = -SW/2 + (0:n-1).' * SW/n;
-
-B0 = hdr.hzpppm / SpinsJ.GetGyromagneticRatio("1H");
-ppm = SpinsJ.HzToPPM(-freqHz, B0, "1H", SpinsJ.waterPPM);
-
-% Select fitting range
-mask = ppm >= 0.2 & ppm <= 4.0;
-
-n = sigLengths(1);
-s = spectrumSigs(:, 1:n);
-B = basisMat
-sFit = s(mask);
-BFit = B(mask, :);
-ppmFit = ppm(mask);
-
-fprintf("Measured spectrum: %d points\n", numel(sFit));
-fprintf("Basis matrix: %d x %d\n", size(BFit));
-
+[sFit, BFit, ppmFit] = getAxis( ...
+    patientClasses, spectrumSigs, sigLengths, basisMat);
 
 %% Complex nonnegative least squares
-
-% Normalize basis columns for numerical stability
-scale = sqrt(sum(abs(BFit).^2, 1));
-assert(all(isfinite(scale) & scale > 0), ...
-    "Invalid or zero basis column.");
-
-Bnormalized = BFit ./ scale;
-
-% Stack real and imaginary components
-A = [real(Bnormalized); imag(Bnormalized)];
-y = [real(sFit); imag(sFit)];
-
-% Solve nonnegative least squares
-aHat = lsqnonneg(A, y);
-
-% Restore original basis scaling
-cHat = aHat ./ scale(:);
-
-% Reconstruct fitted spectrum
-sHat = BFit * cHat;
-
-% Calculate residual
-residual = sFit - sHat;
-
-relativeError = norm(residual) / norm(sFit);
-
-fprintf("Relative residual: %.2f%%\n", ...
-    100 * relativeError);
-
-
-
-%% Plot measured, fitted, and residual spectra
-
-figure("Name", "First Linear Spectral Fit");
-tiledlayout(3,1);
-
-nexttile;
-plot(ppmFit, real(sFit), 'b'); hold on;
-plot(ppmFit, real(sHat), 'r');
-set(gca, 'XDir', 'reverse');
-ylabel("Real");
-legend("Measured", "NNLS fit");
-title("Real Spectrum");
-grid on;
-
-nexttile;
-plot(ppmFit, imag(sFit), 'b'); hold on;
-plot(ppmFit, imag(sHat), 'r');
-set(gca, 'XDir', 'reverse');
-ylabel("Imaginary");
-title("Imaginary Spectrum");
-grid on;
-
-nexttile;
-plot(ppmFit, real(residual), 'b'); hold on;
-plot(ppmFit, imag(residual), 'r');
-set(gca, 'XDir', 'reverse');
-xlabel("Chemical shift (ppm)");
-ylabel("Residual");
-legend("Real", "Imaginary");
-title(sprintf("Residual | Relative error: %.1f%%", ...
-    100*relativeError));
-grid on;
-
-sgtitle("P01 | Division 36 | Initial Linear Fit");
-
+[cHat, sHat, residual] = nnlsFit(BFit, sFit, ppmFit, opts.Plot=True);
 
 
 %% Shared Lorentzian broadening experiment
@@ -709,9 +626,7 @@ grid on;
 
 sgtitle("P01 | Division 36 | Full Nonlinear Model");
 
-%% ============================================================
-%  LOCAL FUNCTIONS — keep these at the end of the script
-%  ============================================================
+%% LOCAL FUNCTIONS
 
 function patients = getPatients(outputs, patientIDs)
     M = numel(patientIDs);
@@ -869,6 +784,129 @@ function plotFIDSpec(outputs, patientID, metabName)
     sgtitle("Patient P01 | Division 36 | Part 1");
 end
 
+function [sFit, BFit, ppmFit] = getAxis(patientClasses, spectrumSigs, ...
+    sigLengths, basisMat)
+    numPatients = numel(sigLengths);
+    sFit = cell(1, numPatients);
+    BFit = cell(1, numPatients);
+    ppmFit = cell(1, numPatients);
+        for patientID = 1: numPatients
+            patient = patientClasses{patientID};
+            n = sigLengths(patientID);
+            s = spectrumSigs(1:n, patientID);
+            B = basisMat{patientID};
+            hdr = patient.preFitBasis.globalHeader;
+        
+            SW = 1 / hdr.badelt;
+            freqHz = -SW/2 + (0:n-1).' * SW/n;
+        
+            B0 = hdr.hzpppm / SpinsJ.GetGyromagneticRatio("1H");
+            ppm = SpinsJ.HzToPPM(-freqHz, B0, "1H", SpinsJ.waterPPM);
+        
+            % Select fitting range
+            mask = ppm >= 0.2 & ppm <= 4.0;
+        
+            sFit{patientID} = s(mask);
+            BFit{patientID} = B(mask, :);
+            ppmFit{patientID} = ppm(mask);
+        end
+end
+
+function [cHat, residual] = nnlsFit(BFit, sFit, ppmFit, opts)
+    arguments
+        BFit
+        sFit
+        ppmFit
+        opts.Plot (1,1) logical = true
+        opts.PatientIDs = []
+    end
+    
+    numPatients = numel(BFit);
+    sHat = cell(numPatients, 1);
+    cHat = cell(numPatients, 1);
+    residual = cell(numPatients, 1);
+    
+    if isempty(opts.PatientIDs)
+        selectedPatients = 1:numel(BFit);
+    else
+        selectedPatients = opts.PatientIDs;
+    end
+    
+    for p = selectedPatients
+        % Extract patient data
+        B = BFit{p};
+        s = sFit{p};
+        ppm = ppmFit{p};
+    
+        s = s(:);
+        ppm = ppm(:);
+    
+        % Normalize basis columns for numerical stability    
+        scale = sqrt(sum(abs(B).^2, 1));
+        assert(all(isfinite(scale) & scale > 0), ...
+            "Invalid or zero basis column.");
+    
+        Bnormalized = B ./ scale;
+    
+        % Stack real and imaginary components
+        A = [real(Bnormalized); imag(Bnormalized)];
+        y = [real(s); imag(s)];
+    
+        % Solve nonnegative least squares
+        aHat = lsqnonneg(A, y);
+    
+        % Restore original basis scaling
+        cHat{p} = aHat ./ scale(:);
+    
+        % Reconstruct fitted spectrum
+        sHat{p} = B * cHat{p};
+    
+        % Calculate residual
+        residual{p} = s - sHat{p};
+    
+        relativeError = norm(residual{p}) / norm(s);
+    
+        fprintf("Patient %d | Relative residual: %.2f%%\n", ...
+            p, 100 * relativeError);
+    
+    
+        % Optional plot measured, fitted, and residual spectra
+        if opts.Plot
+            figure("Name", "Linear Spectral Fit");
+            tiledlayout(3,1);
+    
+            nexttile;
+            plot(ppm, real(s), 'b'); hold on;
+            plot(ppm, real(sHat{p}), 'r');
+            set(gca, 'XDir', 'reverse');
+            ylabel("Real");
+            legend("Measured", "NNLS fit");
+            title("Real Spectrum");
+            grid on;
+    
+            nexttile;
+            plot(ppm, imag(s), 'b'); hold on;
+            plot(ppm, imag(sHat{p}), 'r');
+            set(gca, 'XDir', 'reverse');
+            ylabel("Imaginary");
+            title("Imaginary Spectrum");
+            grid on;
+    
+            nexttile;
+            plot(ppm, real(residual{p}), 'b'); hold on;
+            plot(ppm, imag(residual{p}), 'r');
+            set(gca, 'XDir', 'reverse');
+            xlabel("Chemical shift (ppm)");
+            ylabel("Residual");
+            legend("Real", "Imaginary");
+            title(sprintf("Residual | Relative error: %.1f%%", ...
+                100*relativeError));
+            grid on;
+    
+            sgtitle(sprintf("Patient %d | Initial Linear Fit", p));
+        end
+    end
+end
 
 function theta = replaceParameters(theta, active, values)
     theta(active) = values(:);
