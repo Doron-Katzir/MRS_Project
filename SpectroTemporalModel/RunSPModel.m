@@ -443,29 +443,46 @@ assert(norm(sFit) > 0, "Measured spectrum is empty.");
 % g:     Gaussian FWHM in Hz
 % phi:   global phase in radians
 
-gamma0 = 10 * ones(M,1);
-delta0 = zeros(M,1);
-g0 = 0;
-phi0 = deg2rad(-35);
+gammaInitial = 10;
+gamma0 = gammaInitial * ones(M, 1);
+gammaUpper = 80 * ones(M, 1);
+gammaLower = 0 * ones(M, 1);
+gammaScale = abs(gammaUpper - gammaLower);
 
-theta = [gamma0; delta0; g0; phi0];
+shiftInitial = 0;
+delta0 = shiftInitial * ones(M, 1);
+shiftUpper = 25 * ones(M, 1);
+shiftLower = -15 * ones(M, 1);
+shiftScale = abs(shiftUpper - shiftLower);
+
+globalBroad0 = 0;
+globalBroadUpper = 25;
+globalBroadLower = 0;
+globalBroadScale = abs(globalBroadUpper - globalBroadLower);
+
+phi0 = deg2rad(-35);
+phiUpper = pi;
+phiLower = -pi;
+phiScale = abs(phiUpper - phiLower);
+
+theta = [gamma0; delta0; globalBroad0; phi0];
 
 % Bounds in physical units
-lb = [zeros(M,1);
-      -5*ones(M,1);
-      0;
-      -pi];
+lb = [gammaLower;
+      shiftLower;
+      globalBroadLower;
+      phiLower];
 
-ub = [30*ones(M,1);
-      5*ones(M,1);
-      15;
-      pi];
+ub = [gammaUpper;
+      shiftUpper;
+      globalBroadUpper;
+      phiUpper];
 
 % Parameter scaling for nonlinear optimization
-thetaScale = [10*ones(M,1);
-              2*ones(M,1);
-              5;
-              1];
+thetaScale = [gammaScale;
+              shiftScale;
+              globalBroadScale;
+              phiScale];
 
 %% 5. Check our previous model is reproduced
 
@@ -558,8 +575,9 @@ deltaHat = theta(M+1:2*M);
 gHat = theta(2*M+1);
 phiHat = theta(2*M+2);
 
-[rFinal, cHat, sHat] = profiledResidual( ...
-    theta, basisFids, t, mask, sFit);
+[rFinal, cHat, sHat, betaHat, baselineHat] = ...
+    profiledResidual( ...
+        theta, basisFids, t, mask, sFit);
 
 relativeError = norm(rFinal);
 
@@ -592,6 +610,9 @@ fitResult.fitted = sHat;
 fitResult.ppm = ppmFit;
 fitResult.residual = sFit - sHat;
 fitResult.stageHistory = stageHistory;
+fitResult.baselineCoefficients = betaHat;
+fitResult.baseline = baselineHat;
+fitResult.metaboliteFit = sHat - baselineHat;
 
 %% 9. Plot fitted spectrum and residuals
 
@@ -625,6 +646,15 @@ title(sprintf("Relative residual: %.2f%%", ...
 grid on;
 
 sgtitle("P01 | Division 36 | Full Nonlinear Model");
+
+figure;
+plot(ppmFit, real(baselineHat)); hold on;
+plot(ppmFit, imag(baselineHat));
+set(gca, 'XDir', 'reverse');
+legend('Real baseline', 'Imaginary baseline');
+xlabel('Chemical shift (ppm)');
+grid on;
+
 
 %% LOCAL FUNCTIONS
 
@@ -912,7 +942,7 @@ function theta = replaceParameters(theta, active, values)
     theta(active) = values(:);
 end
 
-function [r, cHat, sHat] = profiledResidual( ...
+function [r, cHat, sHat, betaHat, baselineHat] = profiledResidual( ...
     theta, basisFids, t, mask, sFit)
 
     M = size(basisFids, 2);
@@ -941,6 +971,16 @@ function [r, cHat, sHat] = profiledResidual( ...
 
     Bfit = Bfull(mask, :);
 
+    % Two fixed-shape baseline functions
+    K = numel(sFit);
+    p = linspace(-1, 1, K).';
+
+    baselineBasis = [ ...
+        ones(K,1), ...
+        p, ...
+        1i*ones(K,1), ...
+        1i*p];
+
     % Normalize basis columns
     scales = sqrt(sum(abs(Bfit).^2, 1));
 
@@ -950,16 +990,33 @@ function [r, cHat, sHat] = profiledResidual( ...
     Bnorm = Bfit ./ scales;
 
     % Complex NNLS converted to a real problem
+    
+    % Stack real and imaginary components
     A = [real(Bnorm); imag(Bnorm)];
     y = [real(sFit); imag(sFit)];
-
-    aHat = lsqnonneg(A, y);
-
-    % Restore original amplitudes
+    
+    % Stack the two baseline columns
+    D = [real(baselineBasis); imag(baselineBasis)];
+    
+    % Remove components that the baseline can explain
+    Aprojected = A - D * (D \ A);
+    yprojected = y - D * (D \ y);
+    
+    % Estimate nonnegative metabolite amplitudes
+    aHat = lsqnonneg(Aprojected, yprojected);
+    
+    % Estimate signed baseline coefficients
+    betaHat = D \ (y - A*aHat);
+    
+    % Restore metabolite amplitudes
     cHat = aHat ./ scales(:);
+    
+    % Reconstruct both contributions
+    metaboliteFit = Bfit * cHat;
+    baselineHat = baselineBasis * betaHat;
+    
+    sHat = metaboliteFit + baselineHat;
 
-    % Reconstruct model prediction
-    sHat = Bfit * cHat;
 
     % Normalized real residual for lsqnonlin
     difference = sFit - sHat;
