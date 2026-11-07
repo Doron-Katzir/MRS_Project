@@ -510,63 +510,115 @@ stageNames = [ ...
     "Full joint refinement"
 ];
 
+
+maxCycles = 3;
+cycleTolerance = 1e-4;
+
+% Reset to our original initialization for a fair comparison
+theta = [10*ones(M,1); zeros(M,1); 0; deg2rad(-35)];
+
 stageHistory = struct([]);
+historyIdx = 0;
+previousCycleError = norm(profiledResidual( ...
+    theta, basisFids, t, mask, sFit));
 
-for stage = 1:3
+for cycle = 1: maxCycles
+    
+    fprintf("\n========= CYCLE %d =========\n", cycle);
+    for stage = 1:3
+    
+        fprintf("\n========== STAGE %d: %s ==========\n", ...
+            stage, stageNames(stage));
+    
+        active = stageIndices{stage};
+        
+        % Fixed reference for parameters not active in this stage
+        thetaBase = theta;
+        
+        % Initialize Gaussian only during the first cycle
+        if cycle == 1 && stage == 2 && thetaBase(2*M+1) == 0
+            thetaBase(2*M+1) = 3;
+        end
+        
+        % Optimize scaled variables
+        x0 = thetaBase(active) ./ thetaScale(active);
+        xLB = lb(active) ./ thetaScale(active);
+        xUB = ub(active) ./ thetaScale(active);
+    
+        objective = @(x) profiledResidual( ...
+            replaceParameters( ...
+                thetaBase, active, x .* thetaScale(active)), ...
+            basisFids, t, mask, sFit);
+    
+        options = optimoptions("lsqnonlin", ...
+            "Algorithm", "trust-region-reflective", ...
+            "Display", "iter", ...
+            "FiniteDifferenceType", "forward", ...
+            "FiniteDifferenceStepSize", 1e-4, ...
+            "TypicalX", ones(numel(active),1), ...
+            "MaxIterations", 150, ...
+            "MaxFunctionEvaluations", 10000, ...
+            "FunctionTolerance", 1e-8, ...
+            "StepTolerance", 1e-8, ...
+            "OptimalityTolerance", 1e-6);
+    
+        [xHat, ~, ~, exitflag, solverOutput] = ...
+            lsqnonlin(objective, x0, xLB, xUB, options);
+    
+        % Restore physical parameters
+        thetaCandidate = thetaBase;
+        thetaCandidate(active) = xHat .* thetaScale(active);
+        
+        currentError = norm(profiledResidual( ...
+            theta, basisFids, t, mask, sFit));
+        
+        candidateError = norm(profiledResidual( ...
+            thetaCandidate, basisFids, t, mask, sFit));
+        
+        if candidateError < currentError
+            theta = thetaCandidate;
+        end
+    
+        rStage = profiledResidual( ...
+            theta, basisFids, t, mask, sFit);
+    
+        historyIdx = historyIdx + 1;
+        
+        stageHistory(historyIdx).cycle = cycle;
+        stageHistory(historyIdx).name = stageNames(stage);
+        stageHistory(historyIdx).theta = theta;
+        stageHistory(historyIdx).relativeResidual = ...
+            norm(profiledResidual(theta, basisFids, t, mask, sFit));
+        stageHistory(historyIdx).exitflag = exitflag;
+        stageHistory(historyIdx).solverOutput = solverOutput;
+    
 
-    fprintf("\n========== STAGE %d: %s ==========\n", ...
-        stage, stageNames(stage));
+        fprintf("Stage %d relative residual: %.2f%%\n", ...
+            stage, 100*norm(rStage));
 
-    % Start Gaussian slightly positive when releasing it
-    if stage == 2
-        theta(2*M+1) = 3;
+    end
+    
+    % Evaluate improvement after completing all three stages
+    cycleError = norm(profiledResidual( ...
+        theta, basisFids, t, mask, sFit));
+
+    fprintf("\nCycle %d final residual: %.3f%%\n", ...
+        cycle, 100*cycleError);
+
+    improvement = previousCycleError - cycleError;
+
+    fprintf("Improvement: %.4f percentage points\n", ...
+        100*improvement);
+
+    if improvement < cycleTolerance
+        fprintf("Stopping: improvement below tolerance.\n");
+        break;
     end
 
-    active = stageIndices{stage};
+    previousCycleError = cycleError;
 
-    % Fixed reference for parameters not active in this stage
-    thetaBase = theta;
-
-    % Optimize scaled variables
-    x0 = theta(active) ./ thetaScale(active);
-    xLB = lb(active) ./ thetaScale(active);
-    xUB = ub(active) ./ thetaScale(active);
-
-    objective = @(x) profiledResidual( ...
-        replaceParameters( ...
-            thetaBase, active, x .* thetaScale(active)), ...
-        basisFids, t, mask, sFit);
-
-    options = optimoptions("lsqnonlin", ...
-        "Algorithm", "trust-region-reflective", ...
-        "Display", "iter", ...
-        "FiniteDifferenceType", "forward", ...
-        "FiniteDifferenceStepSize", 1e-4, ...
-        "TypicalX", ones(numel(active),1), ...
-        "MaxIterations", 150, ...
-        "MaxFunctionEvaluations", 10000, ...
-        "FunctionTolerance", 1e-8, ...
-        "StepTolerance", 1e-8, ...
-        "OptimalityTolerance", 1e-6);
-
-    [xHat, ~, ~, exitflag, solverOutput] = ...
-        lsqnonlin(objective, x0, xLB, xUB, options);
-
-    % Restore physical parameters
-    theta(active) = xHat .* thetaScale(active);
-
-    rStage = profiledResidual( ...
-        theta, basisFids, t, mask, sFit);
-
-    stageHistory(stage).name = stageNames(stage);
-    stageHistory(stage).theta = theta;
-    stageHistory(stage).relativeResidual = norm(rStage);
-    stageHistory(stage).exitflag = exitflag;
-    stageHistory(stage).solverOutput = solverOutput;
-
-    fprintf("Stage %d relative residual: %.2f%%\n", ...
-        stage, 100*norm(rStage));
 end
+
 
 %% 7. Extract final fitted parameters
 
