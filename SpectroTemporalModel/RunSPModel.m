@@ -614,6 +614,35 @@ fitResult.baselineCoefficients = betaHat;
 fitResult.baseline = baselineHat;
 fitResult.metaboliteFit = sHat - baselineHat;
 
+%% Singlet reference and fitted positions
+
+singletNames = ["NAA","Cr","PCh"];
+singletRefPPM = [2.01, 3.03, 3.20];
+
+numSinglets = numel(singletNames);
+singletFitPPM = nan(numSinglets,1);
+singletDeltaHz = nan(numSinglets,1);
+
+for k = 1:numSinglets
+    j = find(metaboliteNames == singletNames(k), 1);
+
+    if ~isempty(j)
+        singletDeltaHz(k) = deltaHat(j);
+
+        % Convert fitted shift from Hz to ppm
+        singletFitPPM(k) = singletRefPPM(k) - deltaHat(j) / hdr.hzpppm;
+    end
+end
+
+singletTable = table( ...
+    singletNames(:), ...
+    singletRefPPM(:), ...
+    singletDeltaHz(:), ...
+    singletFitPPM(:), ...
+    'VariableNames', {'Metabolite','ReferencePPM','ShiftHz','FittedPPM'});
+
+disp(singletTable);
+
 %% 9. Plot fitted spectrum and residuals
 
 figure("Name", "Full Nonlinear Spectral Fit");
@@ -626,6 +655,24 @@ set(gca, 'XDir', 'reverse');
 legend("Measured", "Nonlinear fit");
 title("Real Spectrum");
 grid on;
+
+hold on;
+
+for k = 1:numSinglets
+    if ~isnan(singletFitPPM(k))
+        % Reference position
+        xline(singletRefPPM(k), '--', ...
+            sprintf('%s ref %.2f', singletNames(k), singletRefPPM(k)), ...
+            'LabelOrientation','horizontal', ...
+            'LabelVerticalAlignment','bottom', 'HandleVisibility', 'off');
+
+        % Fitted position
+        xline(singletFitPPM(k), '-', ...
+            sprintf('%s fit %.3f', singletNames(k), singletFitPPM(k)), ...
+            'LabelOrientation','horizontal', ...
+            'LabelVerticalAlignment','top', 'HandleVisibility', 'off');
+    end
+end
 
 nexttile;
 plot(ppmFit, imag(sFit), 'b'); hold on;
@@ -654,6 +701,8 @@ set(gca, 'XDir', 'reverse');
 legend('Real baseline', 'Imaginary baseline');
 xlabel('Chemical shift (ppm)');
 grid on;
+
+
 
 
 %% LOCAL FUNCTIONS
