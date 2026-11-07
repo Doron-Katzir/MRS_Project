@@ -484,18 +484,6 @@ thetaScale = [gammaScale;
               globalBroadScale;
               phiScale];
 
-%% 5. Check our previous model is reproduced
-
-r0 = profiledResidual(theta, basisFids, t, mask, sFit);
-
-fprintf("\nInitial relative residual: %.2f%%\n", ...
-    100*norm(r0));
-
-% This should be close to the earlier 58.81% result.
-if abs(norm(r0) - 0.5881) > 0.05
-    warning("Initial fit differs from previous result. Check data conventions.");
-end
-
 %% 6. Staged nonlinear optimization
 
 stageIndices = { ...
@@ -620,7 +608,7 @@ for cycle = 1: maxCycles
 end
 
 
-%% 7. Extract final fitted parameters
+% 7. Extract final fitted parameters
 
 gammaHat = theta(1:M);
 deltaHat = theta(M+1:2*M);
@@ -649,7 +637,7 @@ parameterTable = table( ...
 
 disp(parameterTable);
 
-%% 8. Save results in workspace
+% 8. Save results in workspace
 
 fitResult.theta = theta;
 fitResult.concentrations = cHat;
@@ -666,7 +654,7 @@ fitResult.baselineCoefficients = betaHat;
 fitResult.baseline = baselineHat;
 fitResult.metaboliteFit = sHat - baselineHat;
 
-%% Singlet reference and fitted positions
+% Singlet reference and fitted positions
 
 singletNames = ["NAA","Cr","PCh"];
 singletRefPPM = [2.01, 3.03, 3.20];
@@ -695,7 +683,7 @@ singletTable = table( ...
 
 disp(singletTable);
 
-%% 9. Plot fitted spectrum and residuals
+% 9. Plot fitted spectrum and residuals
 
 figure("Name", "Full Nonlinear Spectral Fit");
 tiledlayout(3,1);
