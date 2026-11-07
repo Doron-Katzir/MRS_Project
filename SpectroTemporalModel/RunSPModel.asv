@@ -69,7 +69,7 @@ plotFIDSpec(outputs, patientID, metab)
     patientClasses, spectrumSigs, sigLengths, basisMat);
 
 %% Complex nonnegative least squares
-[cHat, sHat, residual] = nnlsFit(BFit, sFit, ppmFit, opts.Plot=True);
+[cHat, sHat, residual] = nnlsFit(BFit, sFit, ppmFit, Plot=true);
 
 
 %% Shared Lorentzian broadening experiment
@@ -443,29 +443,46 @@ assert(norm(sFit) > 0, "Measured spectrum is empty.");
 % g:     Gaussian FWHM in Hz
 % phi:   global phase in radians
 
-gamma0 = 10 * ones(M,1);
-delta0 = zeros(M,1);
-g0 = 0;
-phi0 = deg2rad(-35);
+gammaInitial = 10;
+gamma0 = gammaInitial * ones(M, 1);
+gammaUpper = 80 * ones(M, 1);
+gammaLower = 0 * ones(M, 1);
+gammaScale = abs(gammaUpper - gammaLower);
 
-theta = [gamma0; delta0; g0; phi0];
+shiftInitial = 0;
+delta0 = shiftInitial * ones(M, 1);
+shiftUpper = 25 * ones(M, 1);
+shiftLower = -15 * ones(M, 1);
+shiftScale = abs(shiftUpper - shiftLower);
+
+globalBroad0 = 0;
+globalBroadUpper = 25;
+globalBroadLower = 0;
+globalBroadScale = abs(globalBroadUpper - globalBroadLower);
+
+phi0 = deg2rad(-35);
+phiUpper = pi;
+phiLower = -pi;
+phiScale = abs(phiUpper - phiLower);
+
+theta = [gamma0; delta0; globalBroad0; phi0];
 
 % Bounds in physical units
-lb = [zeros(M,1);
-      -5*ones(M,1);
-      0;
-      -pi];
+lb = [gammaLower;
+      shiftLower;
+      globalBroadLower;
+      phiLower];
 
-ub = [30*ones(M,1);
-      5*ones(M,1);
-      15;
-      pi];
+ub = [gammaUpper;
+      shiftUpper;
+      globalBroadUpper;
+      phiUpper];
 
 % Parameter scaling for nonlinear optimization
-thetaScale = [10*ones(M,1);
-              2*ones(M,1);
-              5;
-              1];
+thetaScale = [gammaScale;
+              shiftScale;
+              globalBroadScale;
+              phiScale];
 
 %% 5. Check our previous model is reproduced
 
@@ -493,63 +510,115 @@ stageNames = [ ...
     "Full joint refinement"
 ];
 
+
+maxCycles = 3;
+cycleTolerance = 1e-4;
+
+% Reset to our original initialization for a fair comparison
+theta = [10*ones(M,1); zeros(M,1); 0; deg2rad(-35)];
+
 stageHistory = struct([]);
+historyIdx = 0;
+previousCycleError = norm(profiledResidual( ...
+    theta, basisFids, t, mask, sFit));
 
-for stage = 1:3
+for cycle = 1: maxCycles
+    
+    fprintf("\n========= CYCLE %d =========\n", cycle);
+    for stage = 1:3
+    
+        fprintf("\n========== STAGE %d: %s ==========\n", ...
+            stage, stageNames(stage));
+    
+        active = stageIndices{stage};
+        
+        % Fixed reference for parameters not active in this stage
+        thetaBase = theta;
+        
+        % Initialize Gaussian only during the first cycle
+        if cycle == 1 && stage == 2 && thetaBase(2*M+1) == 0
+            thetaBase(2*M+1) = 3;
+        end
+        
+        % Optimize scaled variables
+        x0 = thetaBase(active) ./ thetaScale(active);
+        xLB = lb(active) ./ thetaScale(active);
+        xUB = ub(active) ./ thetaScale(active);
+    
+        objective = @(x) profiledResidual( ...
+            replaceParameters( ...
+                thetaBase, active, x .* thetaScale(active)), ...
+            basisFids, t, mask, sFit);
+    
+        options = optimoptions("lsqnonlin", ...
+            "Algorithm", "trust-region-reflective", ...
+            "Display", "iter", ...
+            "FiniteDifferenceType", "forward", ...
+            "FiniteDifferenceStepSize", 1e-4, ...
+            "TypicalX", ones(numel(active),1), ...
+            "MaxIterations", 150, ...
+            "MaxFunctionEvaluations", 10000, ...
+            "FunctionTolerance", 1e-8, ...
+            "StepTolerance", 1e-8, ...
+            "OptimalityTolerance", 1e-6);
+    
+        [xHat, ~, ~, exitflag, solverOutput] = ...
+            lsqnonlin(objective, x0, xLB, xUB, options);
+    
+        % Restore physical parameters
+        thetaCandidate = thetaBase;
+        thetaCandidate(active) = xHat .* thetaScale(active);
+        
+        currentError = norm(profiledResidual( ...
+            theta, basisFids, t, mask, sFit));
+        
+        candidateError = norm(profiledResidual( ...
+            thetaCandidate, basisFids, t, mask, sFit));
+        
+        if candidateError < currentError
+            theta = thetaCandidate;
+        end
+    
+        rStage = profiledResidual( ...
+            theta, basisFids, t, mask, sFit);
+    
+        historyIdx = historyIdx + 1;
+        
+        stageHistory(historyIdx).cycle = cycle;
+        stageHistory(historyIdx).name = stageNames(stage);
+        stageHistory(historyIdx).theta = theta;
+        stageHistory(historyIdx).relativeResidual = ...
+            norm(profiledResidual(theta, basisFids, t, mask, sFit));
+        stageHistory(historyIdx).exitflag = exitflag;
+        stageHistory(historyIdx).solverOutput = solverOutput;
+    
 
-    fprintf("\n========== STAGE %d: %s ==========\n", ...
-        stage, stageNames(stage));
+        fprintf("Stage %d relative residual: %.2f%%\n", ...
+            stage, 100*norm(rStage));
 
-    % Start Gaussian slightly positive when releasing it
-    if stage == 2
-        theta(2*M+1) = 3;
+    end
+    
+    % Evaluate improvement after completing all three stages
+    cycleError = norm(profiledResidual( ...
+        theta, basisFids, t, mask, sFit));
+
+    fprintf("\nCycle %d final residual: %.3f%%\n", ...
+        cycle, 100*cycleError);
+
+    improvement = previousCycleError - cycleError;
+
+    fprintf("Improvement: %.4f percentage points\n", ...
+        100*improvement);
+
+    if improvement < cycleTolerance
+        fprintf("Stopping: improvement below tolerance.\n");
+        break;
     end
 
-    active = stageIndices{stage};
+    previousCycleError = cycleError;
 
-    % Fixed reference for parameters not active in this stage
-    thetaBase = theta;
-
-    % Optimize scaled variables
-    x0 = theta(active) ./ thetaScale(active);
-    xLB = lb(active) ./ thetaScale(active);
-    xUB = ub(active) ./ thetaScale(active);
-
-    objective = @(x) profiledResidual( ...
-        replaceParameters( ...
-            thetaBase, active, x .* thetaScale(active)), ...
-        basisFids, t, mask, sFit);
-
-    options = optimoptions("lsqnonlin", ...
-        "Algorithm", "trust-region-reflective", ...
-        "Display", "iter", ...
-        "FiniteDifferenceType", "forward", ...
-        "FiniteDifferenceStepSize", 1e-4, ...
-        "TypicalX", ones(numel(active),1), ...
-        "MaxIterations", 150, ...
-        "MaxFunctionEvaluations", 10000, ...
-        "FunctionTolerance", 1e-8, ...
-        "StepTolerance", 1e-8, ...
-        "OptimalityTolerance", 1e-6);
-
-    [xHat, ~, ~, exitflag, solverOutput] = ...
-        lsqnonlin(objective, x0, xLB, xUB, options);
-
-    % Restore physical parameters
-    theta(active) = xHat .* thetaScale(active);
-
-    rStage = profiledResidual( ...
-        theta, basisFids, t, mask, sFit);
-
-    stageHistory(stage).name = stageNames(stage);
-    stageHistory(stage).theta = theta;
-    stageHistory(stage).relativeResidual = norm(rStage);
-    stageHistory(stage).exitflag = exitflag;
-    stageHistory(stage).solverOutput = solverOutput;
-
-    fprintf("Stage %d relative residual: %.2f%%\n", ...
-        stage, 100*norm(rStage));
 end
+
 
 %% 7. Extract final fitted parameters
 
@@ -558,8 +627,9 @@ deltaHat = theta(M+1:2*M);
 gHat = theta(2*M+1);
 phiHat = theta(2*M+2);
 
-[rFinal, cHat, sHat] = profiledResidual( ...
-    theta, basisFids, t, mask, sFit);
+[rFinal, cHat, sHat, betaHat, baselineHat] = ...
+    profiledResidual( ...
+        theta, basisFids, t, mask, sFit);
 
 relativeError = norm(rFinal);
 
@@ -592,6 +662,38 @@ fitResult.fitted = sHat;
 fitResult.ppm = ppmFit;
 fitResult.residual = sFit - sHat;
 fitResult.stageHistory = stageHistory;
+fitResult.baselineCoefficients = betaHat;
+fitResult.baseline = baselineHat;
+fitResult.metaboliteFit = sHat - baselineHat;
+
+%% Singlet reference and fitted positions
+
+singletNames = ["NAA","Cr","PCh"];
+singletRefPPM = [2.01, 3.03, 3.20];
+
+numSinglets = numel(singletNames);
+singletFitPPM = nan(numSinglets,1);
+singletDeltaHz = nan(numSinglets,1);
+
+for k = 1:numSinglets
+    j = find(metaboliteNames == singletNames(k), 1);
+
+    if ~isempty(j)
+        singletDeltaHz(k) = deltaHat(j);
+
+        % Convert fitted shift from Hz to ppm
+        singletFitPPM(k) = singletRefPPM(k) - deltaHat(j) / hdr.hzpppm;
+    end
+end
+
+singletTable = table( ...
+    singletNames(:), ...
+    singletRefPPM(:), ...
+    singletDeltaHz(:), ...
+    singletFitPPM(:), ...
+    'VariableNames', {'Metabolite','ReferencePPM','ShiftHz','FittedPPM'});
+
+disp(singletTable);
 
 %% 9. Plot fitted spectrum and residuals
 
@@ -605,6 +707,24 @@ set(gca, 'XDir', 'reverse');
 legend("Measured", "Nonlinear fit");
 title("Real Spectrum");
 grid on;
+
+hold on;
+
+for k = 1:numSinglets
+    if ~isnan(singletFitPPM(k))
+        % Reference position
+        xline(singletRefPPM(k), '--', ...
+            sprintf('%s ref %.2f', singletNames(k), singletRefPPM(k)), ...
+            'LabelOrientation','horizontal', ...
+            'LabelVerticalAlignment','bottom', 'HandleVisibility', 'off');
+
+        % Fitted position
+        xline(singletFitPPM(k), '-', ...
+            sprintf('%s fit %.3f', singletNames(k), singletFitPPM(k)), ...
+            'LabelOrientation','horizontal', ...
+            'LabelVerticalAlignment','top', 'HandleVisibility', 'off');
+    end
+end
 
 nexttile;
 plot(ppmFit, imag(sFit), 'b'); hold on;
@@ -626,7 +746,135 @@ grid on;
 
 sgtitle("P01 | Division 36 | Full Nonlinear Model");
 
+figure;
+plot(ppmFit, real(baselineHat)); hold on;
+plot(ppmFit, imag(baselineHat));
+set(gca, 'XDir', 'reverse');
+legend('Real baseline', 'Imaginary baseline');
+xlabel('Chemical shift (ppm)');
+grid on;
+
+
+
+
 %% LOCAL FUNCTIONS
+
+%% Strategy B - Alternating linear and nonlinear optimization
+
+% Independent initialization: do not overwrite Strategy A's theta
+thetaB = [10*ones(M,1); zeros(M,1); 3; deg2rad(-35)];
+
+maxCyclesB = 5;
+cycleToleranceB = 1e-4;
+
+% Scale all 38 nonlinear parameters
+scaleB = thetaScale(:);
+xLB = lb(:) ./ scaleB;
+xUB = ub(:) ./ scaleB;
+
+optionsB = optimoptions("lsqnonlin", ...
+    "Algorithm", "trust-region-reflective", ...
+    "Display", "iter", ...
+    "FiniteDifferenceType", "forward", ...
+    "FiniteDifferenceStepSize", 1e-4, ...
+    "TypicalX", ones(numel(thetaB),1), ...
+    "MaxIterations", 150, ...
+    "MaxFunctionEvaluations", 10000, ...
+    "FunctionTolerance", 1e-8, ...
+    "StepTolerance", 1e-8, ...
+    "OptimalityTolerance", 1e-6);
+
+alternateHistory = struct([]);
+
+for cycle = 1:maxCyclesB
+
+    fprintf("\n======= ALTERNATING CYCLE %d =======\n", cycle);
+
+    %% Step 1 - Optimize linear coefficients
+
+    [rBefore, cFixed, ~, betaFixed] = ...
+        profiledResidual(thetaB, basisFids, t, mask, sFit);
+
+    errorBefore = norm(rBefore);
+
+    %% Step 2 - Optimize nonlinear parameters
+    % cFixed and betaFixed stay constant throughout this step.
+
+    objectiveFixed = @(x) profiledResidual( ...
+        x(:) .* scaleB, ...
+        basisFids, t, mask, sFit, cFixed, betaFixed);
+
+    x0 = thetaB ./ scaleB;
+
+    [xHat, ~, ~, exitflag, solverOutput] = ...
+        lsqnonlin(objectiveFixed, x0, xLB, xUB, optionsB);
+
+    thetaCandidate = xHat(:) .* scaleB;
+
+    %% Step 3 - Re-estimate linear coefficients
+
+    [rCandidate, ~, ~, ~] = ...
+        profiledResidual(thetaCandidate, ...
+                         basisFids, t, mask, sFit);
+
+    candidateError = norm(rCandidate);
+
+    % Only accept improvements to the full profiled objective
+    accepted = candidateError < errorBefore;
+
+    if accepted
+        thetaB = thetaCandidate;
+        errorAfter = candidateError;
+    else
+        errorAfter = errorBefore;
+    end
+
+    improvement = errorBefore - errorAfter;
+
+    %% Record results
+
+    alternateHistory(cycle).cycle = cycle;
+    alternateHistory(cycle).theta = thetaB;
+    alternateHistory(cycle).relativeResidual = errorAfter;
+    alternateHistory(cycle).improvement = improvement;
+    alternateHistory(cycle).accepted = accepted;
+    alternateHistory(cycle).exitflag = exitflag;
+    alternateHistory(cycle).solverOutput = solverOutput;
+
+    fprintf("Before: %.4f%%\n", 100*errorBefore);
+    fprintf("After:  %.4f%%\n", 100*errorAfter);
+    fprintf("Improvement: %.4f percentage points\n", ...
+        100*improvement);
+
+    if improvement < cycleToleranceB
+        fprintf("Stopping: improvement below tolerance.\n");
+        break;
+    end
+end
+
+%% Final fitted spectrum using Strategy B
+
+[rB, cHatB, sHatB, betaHatB, baselineHatB] = ...
+    profiledResidual(thetaB, basisFids, t, mask, sFit);
+
+% Compare against Strategy A
+rA = profiledResidual( ...
+    stageHistory(end).theta, basisFids, t, mask, sFit);
+
+fprintf("\n========== FINAL COMPARISON ==========\n");
+fprintf("Strategy A: %.4f%%\n", 100*norm(rA));
+fprintf("Strategy B: %.4f%%\n", 100*norm(rB));
+
+% Show progression
+TB = table( ...
+    [alternateHistory.cycle].', ...
+    100*[alternateHistory.relativeResidual].', ...
+    [alternateHistory.exitflag].', ...
+    [alternateHistory.accepted].', ...
+    'VariableNames', ...
+    {'Cycle', 'ResidualPercent', 'ExitFlag', 'Accepted'});
+
+disp(TB);
 
 function patients = getPatients(outputs, patientIDs)
     M = numel(patientIDs);
@@ -812,7 +1060,7 @@ function [sFit, BFit, ppmFit] = getAxis(patientClasses, spectrumSigs, ...
         end
 end
 
-function [cHat, residual] = nnlsFit(BFit, sFit, ppmFit, opts)
+function [cHat, sHat, residual] = nnlsFit(BFit, sFit, ppmFit, opts)
     arguments
         BFit
         sFit
@@ -912,54 +1160,94 @@ function theta = replaceParameters(theta, active, values)
     theta(active) = values(:);
 end
 
-function [r, cHat, sHat] = profiledResidual( ...
-    theta, basisFids, t, mask, sFit)
+function [r, cHat, sHat, betaHat, baselineHat] = ...
+    profiledResidual(theta, basisFids, t, mask, sFit, cFixed, betaFixed)
+    
+    if nargin < 6, cFixed = []; end
+    if nargin < 7, betaFixed = []; end
+    
+    if isempty(cFixed)
+        M = size(basisFids, 2);
+    
+        % Extract nonlinear parameters
+        gamma = theta(1:M);
+        delta = theta(M+1:2*M);
+        g = theta(2*M+1);
+        phi = theta(2*M+2);
+    
+        % Individual Lorentzian broadening and frequency shifts
+        lorentzShift = exp( ...
+            (-pi*t)*gamma.' + ...
+            (1i*2*pi*t)*delta.');
+    
+        % Shared Gaussian broadening
+        gaussian = exp( ...
+            -((pi*g*t).^2)/(4*log(2)));
+    
+        % Modify the original time-domain basis
+        modifiedFids = basisFids .* lorentzShift .* gaussian;
+    
+        % FFT and global phase
+        Bfull = exp(1i*phi) * ...
+            fftshift(fft(modifiedFids, [], 1), 1);
+    
+        Bfit = Bfull(mask, :);
+    
+        % Two fixed-shape baseline functions
+        K = numel(sFit);
+        p = linspace(-1, 1, K).';
+    
+        baselineBasis = [ ...
+            ones(K,1), ...
+            p, ...
+            1i*ones(K,1), ...
+            1i*p];
+    
+        % Normalize basis columns
+        scales = sqrt(sum(abs(Bfit).^2, 1));
+    
+        assert(all(isfinite(scales) & scales > 0), ...
+            "Invalid basis columns.");
+    
+        Bnorm = Bfit ./ scales;
+    
+        % Complex NNLS converted to a real problem
+        
+        % Stack real and imaginary components
+        A = [real(Bnorm); imag(Bnorm)];
+        y = [real(sFit); imag(sFit)];
+        
+        % Stack the two baseline columns
+        D = [real(baselineBasis); imag(baselineBasis)];
+        
+        % Remove components that the baseline can explain
+        Aprojected = A - D * (D \ A);
+        yprojected = y - D * (D \ y);
+        
+        % Estimate nonnegative metabolite amplitudes
+        aHat = lsqnonneg(Aprojected, yprojected);
+        
+        % Estimate signed baseline coefficients
+        betaHat = D \ (y - A*aHat);
+        
+        % Restore metabolite amplitudes
+        cHat = aHat ./ scales(:);
+        
+        % Reconstruct both contributions
+        metaboliteFit = Bfit * cHat;
+        baselineHat = baselineBasis * betaHat;
+        
+        sHat = metaboliteFit + baselineHat;
+    else
+        % New mode: use supplied linear coefficients
+        cHat = cFixed(:);
+        betaHat = betaFixed(:);
 
-    M = size(basisFids, 2);
+        metaboliteFit = Bfit * cHat;
+        baselineHat = baselineBasis * betaHat;
 
-    % Extract nonlinear parameters
-    gamma = theta(1:M);
-    delta = theta(M+1:2*M);
-    g = theta(2*M+1);
-    phi = theta(2*M+2);
-
-    % Individual Lorentzian broadening and frequency shifts
-    lorentzShift = exp( ...
-        (-pi*t)*gamma.' + ...
-        (1i*2*pi*t)*delta.');
-
-    % Shared Gaussian broadening
-    gaussian = exp( ...
-        -((pi*g*t).^2)/(4*log(2)));
-
-    % Modify the original time-domain basis
-    modifiedFids = basisFids .* lorentzShift .* gaussian;
-
-    % FFT and global phase
-    Bfull = exp(1i*phi) * ...
-        fftshift(fft(modifiedFids, [], 1), 1);
-
-    Bfit = Bfull(mask, :);
-
-    % Normalize basis columns
-    scales = sqrt(sum(abs(Bfit).^2, 1));
-
-    assert(all(isfinite(scales) & scales > 0), ...
-        "Invalid basis columns.");
-
-    Bnorm = Bfit ./ scales;
-
-    % Complex NNLS converted to a real problem
-    A = [real(Bnorm); imag(Bnorm)];
-    y = [real(sFit); imag(sFit)];
-
-    aHat = lsqnonneg(A, y);
-
-    % Restore original amplitudes
-    cHat = aHat ./ scales(:);
-
-    % Reconstruct model prediction
-    sHat = Bfit * cHat;
+        sHat = metaboliteFit + baselineHat;
+    end
 
     % Normalized real residual for lsqnonlin
     difference = sFit - sHat;
