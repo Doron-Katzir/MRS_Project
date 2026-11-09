@@ -319,18 +319,9 @@ for p = 1:numPatients
     end
     
     nexttile;
-    plot(ppmFit, imag(sFit), 'b'); hold on;
-    plot(ppmFit, imag(sHatB), 'r');
-    set(gca, 'XDir', 'reverse');
-    legend("Measured", "Nonlinear fit");
-    title("Imaginary Spectrum");
-    grid on;
-    
-    nexttile;
     plot(ppmFit, real(sFit-sHatB), 'b'); hold on;
-    plot(ppmFit, imag(sFit-sHatB), 'r');
     set(gca, 'XDir', 'reverse');
-    legend("Real residual", "Imaginary residual");
+    legend("Real residual");
     xlabel("Chemical shift (ppm)");
     title(sprintf("Relative residual: %.2f%%", ...
         100*relativeErrorB));
@@ -350,17 +341,49 @@ for p = 1:numPatients
 end
 
 %% Noise Estimation
+ppmBoundaries = [0.2, 11];
+
+[sFitAll, ~, ppmFitAll, ~, ~] = ...
+    getAxis(patientClasses, spectrumSigs, sigLengths, basisMat, ...
+    ppmBoundaries);
+
+figure;
+hold on;
+plot(ppmFitAll{1}, sFitAll{1});
+
+ppmBoundaries = [0.2, 4.2];
+
+[sFitAll, ~, ~, ~, ~] = ...
+    getAxis(patientClasses, spectrumSigs, sigLengths, basisMat, ...
+    ppmBoundaries);
+
+K = numel(sFitAll{1});
+
 ppmBoundaries = [9, 11];
 
 [sFitAll, BFitAll, ppmFitAll, tAll, masks] = ...
     getAxis(patientClasses, spectrumSigs, sigLengths, basisMat, ...
     ppmBoundaries);
 
-noiseSig = sFitAll{1} - mean(sFitAll{1});
+noiseSig = sFitAll{1};
+
 figure;
-plot(ppmFitAll{1}, sFitAll{1});
 plot(ppmFitAll{1}, noiseSig);
-plot(ppmFitAll{1}, zeros(size(ppmFitAll{1})));
+
+varReal = var(real(noiseSig));
+varImag = var(imag(noiseSig));
+
+noisePower = varReal + varImag;
+
+expectedNoiseNorm = sqrt(K * noisePower);
+
+noiseBenchmark = 100 * expectedNoiseNorm / norm(sFit);
+
+fprintf("Estimated noise benchmark: %.3f%%\n", ...
+    noiseBenchmark);
+
+fprintf("Actual residual: %.3f%%\n", ...
+    100 * norm(rB));
 
 
 %% LOCAL FUNCTIONS
@@ -696,13 +719,11 @@ function [r, cHat, sHat, betaHat, baselineHat] = ...
 
     baselineBasis = [ ...
         ones(K,1), ...
-        p, ...
-        1i*ones(K,1), ...
-        1i*p];
+        p];
 
     if isempty(cFixed)
         % Normalize basis columns
-        scales = sqrt(sum(abs(Bfit).^2, 1));
+        scales = sqrt(sum(real(Bfit).^2, 1));
     
         assert(all(isfinite(scales) & scales > 0), ...
             "Invalid basis columns.");
@@ -712,11 +733,11 @@ function [r, cHat, sHat, betaHat, baselineHat] = ...
         % Complex NNLS converted to a real problem
         
         % Stack real and imaginary components
-        A = [real(Bnorm); imag(Bnorm)];
-        y = [real(sFit); imag(sFit)];
+        A = real(Bnorm);
+        y = real(sFit);
         
         % Stack the two baseline columns
-        D = [real(baselineBasis); imag(baselineBasis)];
+        D = real(baselineBasis);
         
         % Remove components that the baseline can explain
         Aprojected = A - D * (D \ A);
@@ -748,7 +769,7 @@ function [r, cHat, sHat, betaHat, baselineHat] = ...
     end
 
     % Normalized real residual for lsqnonlin
-    difference = sFit - sHat;
+    difference = real(sFit - sHat);
 
-    r = [real(difference); imag(difference)] / norm(sFit);
+    r = real(difference) / norm(real(sFit));
 end
