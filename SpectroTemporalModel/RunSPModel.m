@@ -10,32 +10,6 @@ cfg.paths.rootDir = "C:\Users\User\Documents\Thesis_Lab";
 cfg.paths.dataDir = fullfile(cfg.paths.rootDir, "Data");
 cfg.paths.coordDir = fullfile(cfg.paths.rootDir, "LCMFit");
 
-%% Splice data and save coord files
-%% Splice only one file
-
-% cfg.input.mode = "singleFile";
-% cfg.input.singlePatientID = "P01";
-% cfg.input.singleFileName = "meas_MID00020_FID54986_eja_svs_slaser_TE_80_1_PRE.dat";
-% cfg.input.singleFile = fullfile(cfg.paths.dataDir, cfg.input.singleFileName);
-
-%% Splice all files in the working directory
-
-% cfg.input.mode = "directory";
-% 
-% cfg.input.directory = cfg.paths.dataDir;
-% cfg.input.filePattern = "*.dat";
-% cfg.input.recursive = false;
-
-%% Call splice function
-% processedPatients = Splice_data_multi_patient_input(cfg);
-
-%% Load coord files
-%% Load only one fitted patient folder
-
-% cfg.load.mode = "singleSubfolder";
-% cfg.load.selectedPatientID = "P11";
-% cfg.load.coordDir = cfg.paths.coordDir;
-% 
 
 %% Load all subfolders raw, coord & basis files
 
@@ -47,314 +21,6 @@ cfg.load.loadOnly = true;
 outputs = Load_subsets_multi_patient_input(cfg);
 
 
-%% Examine signals
-% Select patients and extract their data
-patientIDs = ["P01"];
-patientClasses = getPatients(outputs, patientIDs);
-
-% Get FIDs, spectrums and basis matrices
-[fidSigs, spectrumSigs, sigLengths, basisMat] = extractSignals( ...
-    patientClasses);
-
-%% Plotting example
-patientID = "P01";  % Choose patient
-metab = "NAA";  % Choose metab
-
-plotFIDSpec(outputs, patientID, metab)
-
-
-%% Construct ppm axis from acquisition metadata
-
-[sFit, BFit, ppmFit] = getAxis( ...
-    patientClasses, spectrumSigs, sigLengths, basisMat);
-
-%% Complex nonnegative least squares
-[cHat, sHat, residual] = nnlsFit(BFit, sFit, ppmFit, Plot=true);
-
-
-%% Shared Lorentzian broadening experiment
-
-dt = patient.preFitBasis.globalHeader.badelt;
-n = size(B, 1);
-t = (0:n-1).' * dt;
-
-% Recover time-domain basis functions
-basisFids = ifft(ifftshift(B, 1), [], 1);
-
-% Candidate linewidths in Hz
-gammaGrid = 0:0.5:30;
-
-errors = zeros(size(gammaGrid));
-fits = cell(size(gammaGrid));
-concentrations = cell(size(gammaGrid));
-
-y = [real(sFit); imag(sFit)];
-
-for k = 1:numel(gammaGrid)
-
-    gamma = gammaGrid(k);
-
-    % Apply Lorentzian broadening in time
-    decay = exp(-pi * gamma * t);
-    broadenedFids = basisFids .* decay;
-
-    % Convert to frequency domain
-    Bgamma = fftshift(fft(broadenedFids, [], 1), 1);
-    BgFit = Bgamma(mask, :);
-
-    % Normalize basis columns
-    scale = sqrt(sum(abs(BgFit).^2, 1));
-    Bnorm = BgFit ./ scale;
-
-    % Solve complex NNLS as a real problem
-    A = [real(Bnorm); imag(Bnorm)];
-    aHat = lsqnonneg(A, y);
-
-    cHat = aHat ./ scale(:);
-    sHat = BgFit * cHat;
-
-    % Store results
-    errors(k) = norm(sFit - sHat) / norm(sFit);
-    fits{k} = sHat;
-    concentrations{k} = cHat;
-
-end
-
-% Find optimal candidate
-[bestError, bestIdx] = min(errors);
-
-bestGamma = gammaGrid(bestIdx);
-bestFit = fits{bestIdx};
-bestC = concentrations{bestIdx};
-
-fprintf('Original error: %.2f%%\n', 100*errors(1));
-fprintf('Best gamma: %.2f Hz\n', bestGamma);
-fprintf('Best error: %.2f%%\n', 100*bestError);
-
-
-figure;
-plot(gammaGrid, 100*errors, 'o-', 'LineWidth', 1.5);
-
-xlabel('Additional Lorentzian linewidth (Hz)');
-ylabel('Relative residual (%)');
-title('Profiled NNLS Residual vs Lorentzian Broadening');
-grid on;
-
-
-%% Compare original and broadened fits
-
-figure('Name', 'Effect of Lorentzian Broadening');
-tiledlayout(3,1);
-
-% Real component
-nexttile;
-plot(ppmFit, real(sFit), 'b', 'LineWidth', 1.2); hold on;
-plot(ppmFit, real(fits{1}), 'r--');
-plot(ppmFit, real(bestFit), 'g', 'LineWidth', 1.2);
-set(gca, 'XDir', 'reverse');
-legend('Measured', 'Original NNLS', 'Broadened NNLS');
-title(sprintf('Real Spectrum | gamma = %.1f Hz', bestGamma));
-grid on;
-
-% Imaginary component
-nexttile;
-plot(ppmFit, imag(sFit), 'b', 'LineWidth', 1.2); hold on;
-plot(ppmFit, imag(fits{1}), 'r--');
-plot(ppmFit, imag(bestFit), 'g', 'LineWidth', 1.2);
-set(gca, 'XDir', 'reverse');
-legend('Measured', 'Original NNLS', 'Broadened NNLS');
-title('Imaginary Spectrum');
-grid on;
-
-% Remaining residual
-nexttile;
-r = sFit - bestFit;
-plot(ppmFit, real(r), 'b'); hold on;
-plot(ppmFit, imag(r), 'r');
-set(gca, 'XDir', 'reverse');
-legend('Real residual', 'Imaginary residual');
-xlabel('Chemical shift (ppm)');
-title(sprintf('Remaining Residual: %.1f%%', 100*bestError));
-grid on;
-
-
-
-%% Global phase investigation
-
-gamma = bestGamma;
-
-% Construct the broadened basis
-decay = exp(-pi * gamma * t);
-Bbroadened = fftshift(fft(basisFids .* decay, [], 1), 1);
-Bg = Bbroadened(mask, :);
-
-% Normalize columns
-scale = sqrt(sum(abs(Bg).^2, 1));
-BgNorm = Bg ./ scale;
-
-y = [real(sFit); imag(sFit)];
-
-% Candidate global phases (degrees)
-phaseGrid = -180:2:180;
-phaseErrors = zeros(size(phaseGrid));
-phaseFits = cell(size(phaseGrid));
-
-for k = 1:numel(phaseGrid)
-
-    phi = deg2rad(phaseGrid(k));
-
-    % Rotate the complex basis
-    Brot = exp(1i * phi) * BgNorm;
-
-    % Re-estimate concentrations
-    A = [real(Brot); imag(Brot)];
-    aHat = lsqnonneg(A, y);
-
-    cHat = aHat ./ scale(:);
-
-    % Reconstruct
-    sHat = exp(1i * phi) * Bg * cHat;
-
-    phaseFits{k} = sHat;
-    phaseErrors(k) = norm(sFit - sHat) / norm(sFit);
-
-end
-
-[bestPhaseError, idxPhase] = min(phaseErrors);
-bestPhase = phaseGrid(idxPhase);
-bestPhaseFit = phaseFits{idxPhase};
-
-fprintf("Best phase: %.1f degrees\n", bestPhase);
-fprintf("Residual without phase correction: %.2f%%\n", ...
-    100 * phaseErrors(phaseGrid == 0));
-fprintf("Residual with phase correction: %.2f%%\n", ...
-    100 * bestPhaseError);
-
-figure;
-plot(phaseGrid, 100 * phaseErrors, 'LineWidth', 1.5);
-xlabel("Global phase (degrees)");
-ylabel("Relative residual (%)");
-title("Residual vs Global Phase");
-grid on;
-
-
-%% Joint linewidth and phase grid search
-
-gammaGrid2 = 0:2:24;       % Hz
-phaseGrid2 = -80:5:20;     % degrees
-
-errorMap = zeros(numel(gammaGrid2), numel(phaseGrid2));
-
-y = [real(sFit); imag(sFit)];
-
-for ig = 1:numel(gammaGrid2)
-
-    gamma = gammaGrid2(ig);
-
-    % Apply Lorentzian broadening
-    decay = exp(-pi * gamma * t);
-    Bgamma = fftshift(fft(basisFids .* decay, [], 1), 1);
-    Bg = Bgamma(mask, :);
-
-    % Normalize columns
-    scale = sqrt(sum(abs(Bg).^2, 1));
-    Bnorm = Bg ./ scale;
-
-    for ip = 1:numel(phaseGrid2)
-
-        phi = deg2rad(phaseGrid2(ip));
-
-        % Global phase rotation
-        Brot = exp(1i * phi) * Bnorm;
-
-        % NNLS
-        A = [real(Brot); imag(Brot)];
-        aHat = lsqnonneg(A, y);
-
-        % Relative residual
-        errorMap(ig, ip) = norm(y - A*aHat) / norm(y);
-
-    end
-end
-
-% Joint optimum on the grid
-[bestErrorJoint, linearIdx] = min(errorMap(:));
-[ig, ip] = ind2sub(size(errorMap), linearIdx);
-
-gammaJoint = gammaGrid2(ig);
-phaseJoint = phaseGrid2(ip);
-
-fprintf('Best linewidth: %.1f Hz\n', gammaJoint);
-fprintf('Best phase: %.1f degrees\n', phaseJoint);
-fprintf('Joint residual: %.2f%%\n', 100*bestErrorJoint);
-
-% Visualize the objective surface
-
-figure;
-contourf(phaseGrid2, gammaGrid2, 100*errorMap, 20);
-colorbar;
-hold on;
-plot(phaseJoint, gammaJoint, 'rx', ...
-    'MarkerSize', 12, 'LineWidth', 2);
-
-xlabel('Global phase (degrees)');
-ylabel('Lorentzian linewidth (Hz)');
-title('Joint Profiled NNLS Residual (%)');
-
-
-%% Reconstruct the jointly optimized model
-
-decay = exp(-pi * gammaJoint * t);
-
-Bgamma = fftshift(fft(basisFids .* decay, [], 1), 1);
-Bg = Bgamma(mask, :);
-
-phi = deg2rad(phaseJoint);
-Bjoint = exp(1i * phi) * Bg;
-
-scale = vecnorm(Bjoint, 2, 1);
-Bnorm = Bjoint ./ scale;
-
-A = [real(Bnorm); imag(Bnorm)];
-y = [real(sFit); imag(sFit)];
-
-aHat = lsqnonneg(A, y);
-cJoint = aHat ./ scale(:);
-
-sJoint = Bjoint * cJoint;
-rJoint = sFit - sJoint;
-
-% Plot
-
-figure;
-tiledlayout(3,1);
-
-nexttile;
-plot(ppmFit, real(sFit), 'b'); hold on;
-plot(ppmFit, real(sJoint), 'r');
-set(gca, 'XDir', 'reverse');
-legend('Measured', 'Joint fit');
-title('Real Spectrum');
-grid on;
-
-nexttile;
-plot(ppmFit, imag(sFit), 'b'); hold on;
-plot(ppmFit, imag(sJoint), 'r');
-set(gca, 'XDir', 'reverse');
-legend('Measured', 'Joint fit');
-title('Imaginary Spectrum');
-grid on;
-
-nexttile;
-plot(ppmFit, real(rJoint), 'b'); hold on;
-plot(ppmFit, imag(rJoint), 'r');
-set(gca, 'XDir', 'reverse');
-legend('Real residual', 'Imaginary residual');
-title('Remaining Residual');
-xlabel('Chemical shift (ppm)');
-grid on;
-
-
 %% Full all shifts, all broadening, global shift joint fit
 
 %% ============================================================
@@ -362,919 +28,340 @@ grid on;
 %  Variable projection: lsqnonlin + lsqnonneg
 %  ============================================================
 
-%% 1. Select measurement from the cached dataset
-
-patientIDs = string({outputs.patientResults.patientID});
-p = find(patientIDs == "P01", 1);
-assert(~isempty(p), "Patient not found.");
-
-patient = outputs.patientResults(p);
-T = patient.originalData.fileTable;
-
-idx = find(T.division == 36 & T.part == 1, 1);
-assert(~isempty(idx), "Measurement not found.");
-
-fid = patient.originalData.fids(:, idx);
-n = numel(fid);
-
-s = fftshift(fft(fid));
-
-%% 2. Recover original time-domain basis functions
-
-basisStored = patient.preFitBasis.spectra;
-metaboliteNames = string(patient.preFitBasis.metaboliteNames);
-M = numel(metaboliteNames);
-
-basisFids = complex(zeros(n, M));
-tailRatios = zeros(M, 1);
-
-for j = 1:M
-
-    if iscell(basisStored)
-        bj = basisStored{j}(:);
-    else
-        bj = basisStored(:, j);
-    end
-
-    % Undo fftshift and FFT of the exported basis
-    bPadded = ifft(ifftshift(bj));
-
-    assert(numel(bPadded) == 2*n, ...
-        "Unexpected basis length.");
-
-    % Verify that the second half is zero padding
-    tailRatios(j) = norm(bPadded(n+1:end)) / ...
-                    max(norm(bPadded(1:n)), eps);
-
-    basisFids(:, j) = bPadded(1:n);
-end
-
-assert(max(tailRatios) < 1e-5, ...
-    "Basis does not appear to be correctly zero-filled.");
-
-%% 3. Construct frequency axis and fitting window
-
-hdr = patient.preFitBasis.globalHeader;
-
-dt = hdr.badelt;
-t = (0:n-1).' * dt;
-
-SW = 1/dt;
-freqHz = -SW/2 + (0:n-1).' * SW/n;
-
-B0 = hdr.hzpppm / SpinsJ.GetGyromagneticRatio("1H");
-
-ppm = SpinsJ.HzToPPM( ...
-    -freqHz, B0, "1H", SpinsJ.waterPPM);
-
-mask = ppm >= 0.2 & ppm <= 4.0;
-
-ppmFit = ppm(mask);
-sFit = s(mask);
-
-assert(norm(sFit) > 0, "Measured spectrum is empty.");
-
-%% Nonlinear parameter initialization
-
-% theta = [gamma(1:M); delta(1:M); g; phi]
-%
-% gamma: Lorentzian FWHM in Hz
-% delta: metabolite shifts in Hz
-% g:     Gaussian FWHM in Hz
-% phi:   global phase in radians
-
-gammaInitial = 10;
-gamma0 = gammaInitial * ones(M, 1);
-gammaUpper = 80 * ones(M, 1);
-gammaLower = 0 * ones(M, 1);
-gammaScale = abs(gammaUpper - gammaLower);
-
-shiftInitial = 0;
-delta0 = shiftInitial * ones(M, 1);
-shiftUpper = 25 * ones(M, 1);
-shiftLower = -15 * ones(M, 1);
-shiftScale = abs(shiftUpper - shiftLower);
-
-globalBroad0 = 0;
-globalBroadUpper = 25;
-globalBroadLower = 0;
-globalBroadScale = abs(globalBroadUpper - globalBroadLower);
-
-phi0 = deg2rad(-35);
-phiUpper = pi;
-phiLower = -pi;
-phiScale = abs(phiUpper - phiLower);
-
-thetaInitial = [gamma0; delta0; globalBroad0; phi0];
-
-% Bounds in physical units
-lb = [gammaLower;
-      shiftLower;
-      globalBroadLower;
-      phiLower];
-
-ub = [gammaUpper;
-      shiftUpper;
-      globalBroadUpper;
-      phiUpper];
-
-% Parameter scaling for nonlinear optimization
-thetaScale = [gammaScale;
-              shiftScale;
-              globalBroadScale;
-              phiScale];
-
-%% Staged nonlinear optimization
-
-theta = thetaInitial;
-
-stageIndices = { ...
-    M+(1:M), ...             % Stage 1: individual shifts
-    [1:M, 2*M+1], ...        % Stage 2: linewidths + Gaussian
-    1:(2*M+2) ...            % Stage 3: all nonlinear parameters
-};
-
-stageNames = [ ...
-    "Individual frequency shifts", ...
-    "Individual linewidths and Gaussian", ...
-    "Full joint refinement"
-];
-
-
-maxCycles = 3;
-cycleTolerance = 1e-4;
-
-stageHistory = struct([]);
-historyIdx = 0;
-previousCycleError = norm(profiledResidual( ...
-    theta, basisFids, t, mask, sFit));
-
-for cycle = 1: maxCycles
-    
-    fprintf("\n========= CYCLE %d =========\n", cycle);
-    for stage = 1:3
-    
-        fprintf("\n========== STAGE %d: %s ==========\n", ...
-            stage, stageNames(stage));
-    
-        active = stageIndices{stage};
-        
-        % Fixed reference for parameters not active in this stage
-        thetaBase = theta;
-        
-        % Initialize Gaussian only during the first cycle
-        if cycle == 1 && stage == 2 && thetaBase(2*M+1) == 0
-            thetaBase(2*M+1) = 3;
-        end
-        
-        % Optimize scaled variables
-        x0 = thetaBase(active) ./ thetaScale(active);
-        xLB = lb(active) ./ thetaScale(active);
-        xUB = ub(active) ./ thetaScale(active);
-    
-        objective = @(x) profiledResidual( ...
-            replaceParameters( ...
-                thetaBase, active, x .* thetaScale(active)), ...
-            basisFids, t, mask, sFit);
-    
-        options = optimoptions("lsqnonlin", ...
-            "Algorithm", "trust-region-reflective", ...
-            "Display", "iter", ...
-            "FiniteDifferenceType", "forward", ...
-            "FiniteDifferenceStepSize", 1e-4, ...
-            "TypicalX", ones(numel(active),1), ...
-            "MaxIterations", 150, ...
-            "MaxFunctionEvaluations", 10000, ...
-            "FunctionTolerance", 1e-8, ...
-            "StepTolerance", 1e-8, ...
-            "OptimalityTolerance", 1e-6);
-    
-        [xHat, ~, ~, exitflag, solverOutput] = ...
-            lsqnonlin(objective, x0, xLB, xUB, options);
-    
-        % Restore physical parameters
-        thetaCandidate = thetaBase;
-        thetaCandidate(active) = xHat .* thetaScale(active);
-        
-        currentError = norm(profiledResidual( ...
-            theta, basisFids, t, mask, sFit));
-        
-        candidateError = norm(profiledResidual( ...
-            thetaCandidate, basisFids, t, mask, sFit));
-        
-        if candidateError < currentError
-            theta = thetaCandidate;
-        end
-    
-        rStage = profiledResidual( ...
-            theta, basisFids, t, mask, sFit);
-    
-        historyIdx = historyIdx + 1;
-        
-        stageHistory(historyIdx).cycle = cycle;
-        stageHistory(historyIdx).name = stageNames(stage);
-        stageHistory(historyIdx).theta = theta;
-        stageHistory(historyIdx).relativeResidual = ...
-            norm(profiledResidual(theta, basisFids, t, mask, sFit));
-        stageHistory(historyIdx).exitflag = exitflag;
-        stageHistory(historyIdx).solverOutput = solverOutput;
-    
-
-        fprintf("Stage %d relative residual: %.2f%%\n", ...
-            stage, 100*norm(rStage));
-
-    end
-    
-    % Evaluate improvement after completing all three stages
-    cycleError = norm(profiledResidual( ...
-        theta, basisFids, t, mask, sFit));
-
-    fprintf("\nCycle %d final residual: %.3f%%\n", ...
-        cycle, 100*cycleError);
-
-    improvement = previousCycleError - cycleError;
-
-    fprintf("Improvement: %.4f percentage points\n", ...
-        100*improvement);
-
-    if improvement < cycleTolerance
-        fprintf("Stopping: improvement below tolerance.\n");
-        break;
-    end
-
-    previousCycleError = cycleError;
-
-end
-
-
-% 7. Extract final fitted parameters
-
-gammaHat = theta(1:M);
-deltaHat = theta(M+1:2*M);
-gHat = theta(2*M+1);
-phiHat = theta(2*M+2);
-
-[rFinal, cHat, sHat, betaHat, baselineHat] = ...
-    profiledResidual( ...
-        theta, basisFids, t, mask, sFit);
-
-relativeError = norm(rFinal);
-
-fprintf("\n========== FINAL RESULT ==========\n");
-fprintf("Relative residual: %.2f%%\n", 100*relativeError);
-fprintf("Gaussian FWHM: %.3f Hz\n", gHat);
-fprintf("Global phase: %.3f degrees\n", rad2deg(phiHat));
-
-parameterTable = table( ...
-    metaboliteNames(:), ...
-    cHat(:), ...
-    gammaHat(:), ...
-    deltaHat(:), ...
-    'VariableNames', { ...
-        'Metabolite', 'Amplitude', ...
-        'LorentzianHz', 'FrequencyShiftHz'});
-
-disp(parameterTable);
-
-% 8. Save results in workspace
-
-fitResult.theta = theta;
-fitResult.concentrations = cHat;
-fitResult.parameterTable = parameterTable;
-fitResult.gaussianFWHM = gHat;
-fitResult.phaseDegrees = rad2deg(phiHat);
-fitResult.relativeResidual = relativeError;
-fitResult.measured = sFit;
-fitResult.fitted = sHat;
-fitResult.ppm = ppmFit;
-fitResult.residual = sFit - sHat;
-fitResult.stageHistory = stageHistory;
-fitResult.baselineCoefficients = betaHat;
-fitResult.baseline = baselineHat;
-fitResult.metaboliteFit = sHat - baselineHat;
-
-% Singlet reference and fitted positions
-
-singletNames = ["NAA","Cr","PCh"];
-singletRefPPM = [2.01, 3.03, 3.20];
-
-numSinglets = numel(singletNames);
-singletFitPPM = nan(numSinglets,1);
-singletDeltaHz = nan(numSinglets,1);
-
-for k = 1:numSinglets
-    j = find(metaboliteNames == singletNames(k), 1);
-
-    if ~isempty(j)
-        singletDeltaHz(k) = deltaHat(j);
-
-        % Convert fitted shift from Hz to ppm
-        singletFitPPM(k) = singletRefPPM(k) - deltaHat(j) / hdr.hzpppm;
-    end
-end
-
-singletTable = table( ...
-    singletNames(:), ...
-    singletRefPPM(:), ...
-    singletDeltaHz(:), ...
-    singletFitPPM(:), ...
-    'VariableNames', {'Metabolite','ReferencePPM','ShiftHz','FittedPPM'});
-
-disp(singletTable);
-
-% 9. Plot fitted spectrum and residuals
-
-figure("Name", "Full Nonlinear Spectral Fit");
-tiledlayout(3,1);
-
-nexttile;
-plot(ppmFit, real(sFit), 'b'); hold on;
-plot(ppmFit, real(sHat), 'r');
-set(gca, 'XDir', 'reverse');
-legend("Measured", "Nonlinear fit");
-title("Real Spectrum");
-grid on;
-
-hold on;
-
-for k = 1:numSinglets
-    if ~isnan(singletFitPPM(k))
-        % Reference position
-        xline(singletRefPPM(k), '--', ...
-            sprintf('%s ref %.2f', singletNames(k), singletRefPPM(k)), ...
-            'LabelOrientation','horizontal', ...
-            'LabelVerticalAlignment','bottom', 'HandleVisibility', 'off');
-
-        % Fitted position
-        xline(singletFitPPM(k), '-', ...
-            sprintf('%s fit %.3f', singletNames(k), singletFitPPM(k)), ...
-            'LabelOrientation','horizontal', ...
-            'LabelVerticalAlignment','top', 'HandleVisibility', 'off');
-    end
-end
-
-nexttile;
-plot(ppmFit, imag(sFit), 'b'); hold on;
-plot(ppmFit, imag(sHat), 'r');
-set(gca, 'XDir', 'reverse');
-legend("Measured", "Nonlinear fit");
-title("Imaginary Spectrum");
-grid on;
-
-nexttile;
-plot(ppmFit, real(sFit-sHat), 'b'); hold on;
-plot(ppmFit, imag(sFit-sHat), 'r');
-set(gca, 'XDir', 'reverse');
-legend("Real residual", "Imaginary residual");
-xlabel("Chemical shift (ppm)");
-title(sprintf("Relative residual: %.2f%%", ...
-    100*relativeError));
-grid on;
-
-sgtitle("P01 | Division 36 | Full Nonlinear Model");
-
-figure;
-plot(ppmFit, real(baselineHat)); hold on;
-plot(ppmFit, imag(baselineHat));
-set(gca, 'XDir', 'reverse');
-legend('Real baseline', 'Imaginary baseline');
-xlabel('Chemical shift (ppm)');
-grid on;
+%% 1. Select patients
+patientIDs = ["P01"];
+patientClasses = getPatients(outputs, patientIDs);
+
+%% 2. Extract signals and basis functions
+[fidSigs, spectrumSigs, sigLengths, basisMat, ...
+    basisFidsAll, metaboliteNamesAll] = ...
+    extractSignals(patientClasses);
+
+%% 3. Construct fitting axes and select ppm range
+ppmBoundaries = [0.2, 4.2];
+
+[sFitAll, BFitAll, ppmFitAll, tAll, masks] = ...
+    getAxis(patientClasses, spectrumSigs, sigLengths, basisMat, ...
+ppmBoundaries);
 
 %% Strategy B - Alternating linear and nonlinear optimization
 
 % Independent initialization: do not overwrite Strategy A's theta
-thetaB = thetaInitial;
 
 maxCyclesB = 15;
 cycleToleranceB = 1e-4;
 
-% Scale all 38 nonlinear parameters
-scaleB = thetaScale(:);
-xLB = lb(:) ./ scaleB;
-xUB = ub(:) ./ scaleB;
+numPatients = numel(patientClasses);
+resultsB = cell(1, numPatients);
 
-optionsB = optimoptions("lsqnonlin", ...
+for p = 1:numPatients
+
+    % Retrieve patient-specific data
+    patient = patientClasses{p};
+
+    metaboliteNames = metaboliteNamesAll{p};
+    M = numel(metaboliteNames);
+
+    basisFids = basisFidsAll{p};
+    sFit = sFitAll{p};
+    ppmFit = ppmFitAll{p};
+    t = tAll{p};
+    mask = masks{p};
+
+    hdr = patient.preFitBasis.globalHeader;
+
+    alternateHistory = struct([]);
+    
+    % Nonlinear parameter initialization
+
+    % theta = [gamma(1:M); delta(1:M); g; phi]
+    %
+    % gamma: Lorentzian FWHM in Hz
+    % delta: metabolite shifts in Hz
+    % g:     Gaussian FWHM in Hz
+    % phi:   global phase in radians
+
+    gammaInitial = 10;
+    gamma0 = gammaInitial * ones(M, 1);
+    gammaUpper = 80 * ones(M, 1);
+    gammaLower = 0 * ones(M, 1);
+    gammaScale = abs(gammaUpper - gammaLower);
+
+    shiftInitial = 0;
+    delta0 = shiftInitial * ones(M, 1);
+    shiftUpper = 25 * ones(M, 1);
+    shiftLower = -15 * ones(M, 1);
+    shiftScale = abs(shiftUpper - shiftLower);
+
+    globalBroad0 = 0;
+    globalBroadUpper = 25;
+    globalBroadLower = 0;
+    globalBroadScale = abs(globalBroadUpper - globalBroadLower);
+
+    phi0 = deg2rad(-35);
+    phiUpper = pi;
+    phiLower = -pi;
+    phiScale = abs(phiUpper - phiLower);
+
+    thetaInitial = [gamma0; delta0; globalBroad0; phi0];
+
+    % Bounds in physical units
+    lb = [gammaLower;
+        shiftLower;
+        globalBroadLower;
+        phiLower];
+
+    ub = [gammaUpper;
+        shiftUpper;
+        globalBroadUpper;
+        phiUpper];
+
+    % Parameter scaling for nonlinear optimization
+    thetaScale = [gammaScale;
+        shiftScale;
+        globalBroadScale;
+        phiScale];
+    
+    % Scale all 38 nonlinear parameters
+    scaleB = thetaScale(:);
+    xLB = lb(:) ./ scaleB;
+    xUB = ub(:) ./ scaleB;
+
+    optionsB = optimoptions("lsqnonlin", ...
     "Algorithm", "trust-region-reflective", ...
     "Display", "iter", ...
     "FiniteDifferenceType", "forward", ...
     "FiniteDifferenceStepSize", 1e-4, ...
-    "TypicalX", ones(numel(thetaB),1), ...
+    "TypicalX", ones(numel(thetaInitial),1), ...
     "MaxIterations", 150, ...
     "MaxFunctionEvaluations", 10000, ...
     "FunctionTolerance", 1e-8, ...
     "StepTolerance", 1e-8, ...
     "OptimalityTolerance", 1e-6);
 
-alternateHistory = struct([]);
-
-for cycle = 1:maxCyclesB
-
-    fprintf("\n======= ALTERNATING CYCLE %d =======\n", cycle);
-
-    % Step 1 - Optimize linear coefficients
-
-    [rBefore, cFixed, ~, betaFixed] = ...
-        profiledResidual(thetaB, basisFids, t, mask, sFit);
-
-    errorBefore = norm(rBefore);
-
-    % Step 2 - Optimize nonlinear parameters
-    % cFixed and betaFixed stay constant throughout this step.
-
-    objectiveFixed = @(x) profiledResidual( ...
-        x(:) .* scaleB, ...
-        basisFids, t, mask, sFit, cFixed, betaFixed);
-
-    x0 = thetaB ./ scaleB;
-
-    [xHat, ~, ~, exitflag, solverOutput] = ...
-        lsqnonlin(objectiveFixed, x0, xLB, xUB, optionsB);
-
-    thetaCandidate = xHat(:) .* scaleB;
-
-    % Step 3 - Re-estimate linear coefficients
-
-    [rCandidate, ~, ~, ~] = ...
-        profiledResidual(thetaCandidate, ...
-                         basisFids, t, mask, sFit);
-
-    candidateError = norm(rCandidate);
-
-    % Only accept improvements to the full profiled objective
-    accepted = candidateError < errorBefore;
-
-    if accepted
-        thetaB = thetaCandidate;
-        errorAfter = candidateError;
-    else
-        errorAfter = errorBefore;
-    end
-
-    improvement = errorBefore - errorAfter;
-
-    % Record results
-
-    alternateHistory(cycle).cycle = cycle;
-    alternateHistory(cycle).theta = thetaB;
-    alternateHistory(cycle).relativeResidual = errorAfter;
-    alternateHistory(cycle).improvement = improvement;
-    alternateHistory(cycle).accepted = accepted;
-    alternateHistory(cycle).exitflag = exitflag;
-    alternateHistory(cycle).solverOutput = solverOutput;
-
-    fprintf("Before: %.4f%%\n", 100*errorBefore);
-    fprintf("After:  %.4f%%\n", 100*errorAfter);
-    fprintf("Improvement: %.4f percentage points\n", ...
-        100*improvement);
-
-    if improvement < cycleToleranceB
-        fprintf("Stopping: improvement below tolerance.\n");
-        break;
-    end
-end
-
-% Final fitted spectrum using Strategy B
-
-[rB, cHatB, sHatB, betaHatB, baselineHatB] = ...
-    profiledResidual(thetaB, basisFids, t, mask, sFit);
-
-% Compare against Strategy A
-rA = profiledResidual( ...
-    stageHistory(end).theta, basisFids, t, mask, sFit);
-
-fprintf("\n========== FINAL COMPARISON ==========\n");
-fprintf("Strategy A: %.4f%%\n", 100*norm(rA));
-fprintf("Strategy B: %.4f%%\n", 100*norm(rB));
-
-% Show progression
-TB = table( ...
-    [alternateHistory.cycle].', ...
-    100*[alternateHistory.relativeResidual].', ...
-    [alternateHistory.exitflag].', ...
-    [alternateHistory.accepted].', ...
-    'VariableNames', ...
-    {'Cycle', 'ResidualPercent', 'ExitFlag', 'Accepted'});
-
-disp(TB);
-
-% Strategy B - Full estimated parameter table
-
-% Extract fitted linear parameters
-[~, cHatB] = profiledResidual( ...
-    thetaB, basisFids, t, mask, sFit);
-
-% Extract nonlinear parameters
-gammaB = thetaB(1:M);
-deltaB = thetaB(M+1:2*M);
-gB = thetaB(2*M+1);
-phiB = thetaB(2*M+2);
-
-% Construct parameter table
-parameterTableB = table( ...
-    metaboliteNames(:), ...
-    cHatB(:), ...
-    gammaB(:), ...
-    deltaB(:), ...
-    'VariableNames', ...
-    {'Metabolite', 'Concentration', 'LinewidthHz', 'ShiftHz'});
-
-disp(parameterTableB);
-
-% Display global parameters
-fprintf("\nGlobal Gaussian FWHM: %.4f Hz\n", gB);
-fprintf("Global phase: %.4f degrees\n", rad2deg(phiB));
-
-
-
-% Strategy B - Plot fitted spectrum and residuals
-
-% Reconstruct Strategy B results
-[rB, cHatB, sHatB, betaHatB, baselineHatB] = ...
-    profiledResidual(thetaB, basisFids, t, mask, sFit);
-
-relativeErrorB = norm(rB);
-
-% Recalculate singlet positions for Strategy B
-% Singlet reference positions
-
-singletNames = ["NAA", "Cr", "PCh"];
-singletRefPPM = [2.01, 3.03, 3.20];
-
-numSinglets = numel(singletNames);
-deltaB = thetaB(M+1:2*M);
-singletFitPPMB = nan(size(singletRefPPM));
-
-for k = 1:numSinglets
-    j = find(metaboliteNames == singletNames(k), 1);
-
-    if ~isempty(j)
-        singletFitPPMB(k) = singletRefPPM(k) ...
-            - deltaB(j) / hdr.hzpppm;
-    end
-end
-
-% Plot fitted spectrum and residuals
-
-figure("Name", "Strategy B - Full Nonlinear Spectral Fit");
-tiledlayout(3,1);
-
-nexttile;
-plot(ppmFit, real(sFit), 'b'); hold on;
-plot(ppmFit, real(sHatB), 'r');
-set(gca, 'XDir', 'reverse');
-legend("Measured", "Nonlinear fit");
-title("Real Spectrum");
-grid on;
-
-hold on;
-
-for k = 1:numSinglets
-    if ~isnan(singletFitPPMB(k))
-        % Reference position
-        xline(singletRefPPM(k), '--', ...
-            sprintf('%s ref %.2f', singletNames(k), singletRefPPM(k)), ...
-            'LabelOrientation','horizontal', ...
-            'LabelVerticalAlignment','bottom', ...
-            'HandleVisibility', 'off');
-
-        % Fitted position
-        xline(singletFitPPMB(k), '-', ...
-            sprintf('%s fit %.3f', singletNames(k), singletFitPPMB(k)), ...
-            'LabelOrientation','horizontal', ...
-            'LabelVerticalAlignment','top', ...
-            'HandleVisibility', 'off');
-    end
-end
-
-nexttile;
-plot(ppmFit, imag(sFit), 'b'); hold on;
-plot(ppmFit, imag(sHatB), 'r');
-set(gca, 'XDir', 'reverse');
-legend("Measured", "Nonlinear fit");
-title("Imaginary Spectrum");
-grid on;
-
-nexttile;
-plot(ppmFit, real(sFit-sHatB), 'b'); hold on;
-plot(ppmFit, imag(sFit-sHatB), 'r');
-set(gca, 'XDir', 'reverse');
-legend("Real residual", "Imaginary residual");
-xlabel("Chemical shift (ppm)");
-title(sprintf("Relative residual: %.2f%%", ...
-    100*relativeErrorB));
-grid on;
-
-sgtitle("P01 | Division 36 | Strategy B - Alternating Optimization");
-
-% Plot estimated complex baseline
-
-figure("Name", "Strategy B - Complex Baseline");
-plot(ppmFit, real(baselineHatB)); hold on;
-plot(ppmFit, imag(baselineHatB));
-set(gca, 'XDir', 'reverse');
-legend('Real baseline', 'Imaginary baseline');
-xlabel('Chemical shift (ppm)');
-grid on;
-
-
-%% Investigate inactive Glu: linewidth and frequency-shift grid
-
-% Identify Glu
-jGlu = find(string(metaboliteNames(:)) == "Glu", 1);
-assert(~isempty(jGlu), "Glu not found in metabolite list.");
-
-% Start from Strategy B's final solution
-thetaBase = thetaB;
-
-[rBase, cBase] = profiledResidual( ...
-    thetaBase, basisFids, t, mask, sFit);
-
-baseError = norm(rBase);
-
-% Search the existing physical parameter bounds
-linewidthGrid = linspace(lb(jGlu), ub(jGlu), 21);
-shiftGrid = linspace(lb(M+jGlu), ub(M+jGlu), 31);
-
-% Store residuals and fitted Glu amplitudes
-errorGrid = nan(numel(linewidthGrid), numel(shiftGrid));
-amplitudeGrid = nan(size(errorGrid));
-
-bestError = baseError;
-bestTheta = thetaBase;
-bestAmplitude = cBase(jGlu);
-
-for ig = 1:numel(linewidthGrid)
-    for id = 1:numel(shiftGrid)
-
-        thetaTest = thetaBase;
-
-        % Change only Glu's nonlinear parameters
-        thetaTest(jGlu) = linewidthGrid(ig);
-        thetaTest(M+jGlu) = shiftGrid(id);
-
-        % Re-estimate ALL concentrations and the baseline
-        [rTest, cTest] = profiledResidual( ...
-            thetaTest, basisFids, t, mask, sFit);
-
-        testError = norm(rTest);
-
-        errorGrid(ig,id) = testError;
-        amplitudeGrid(ig,id) = cTest(jGlu);
-
-        if testError < bestError
-            bestError = testError;
-            bestTheta = thetaTest;
-            bestAmplitude = cTest(jGlu);
+    for cycle = 1:maxCyclesB
+    
+        fprintf("\n======= ALTERNATING CYCLE %d =======\n", cycle);
+    
+        % Step 1 - Optimize linear coefficients
+    
+        [rBefore, cFixed, ~, betaFixed] = ...
+            profiledResidual(thetaInitial, basisFids, t, mask, sFit);
+    
+        errorBefore = norm(rBefore);
+    
+        % Step 2 - Optimize nonlinear parameters
+        % cFixed and betaFixed stay constant throughout this step.
+    
+        objectiveFixed = @(x) profiledResidual( ...
+            x(:) .* scaleB, ...
+            basisFids, t, mask, sFit, cFixed, betaFixed);
+    
+        x0 = thetaInitial ./ scaleB;
+    
+        [xHat, ~, ~, exitflag, solverOutput] = ...
+            lsqnonlin(objectiveFixed, x0, xLB, xUB, optionsB);
+    
+        thetaCandidate = xHat(:) .* scaleB;
+    
+        % Step 3 - Re-estimate linear coefficients
+    
+        [rCandidate, ~, ~, ~] = ...
+            profiledResidual(thetaCandidate, ...
+                             basisFids, t, mask, sFit);
+    
+        candidateError = norm(rCandidate);
+    
+        % Only accept improvements to the full profiled objective
+        accepted = candidateError < errorBefore;
+    
+        if accepted
+            thetaInitial = thetaCandidate;
+            errorAfter = candidateError;
+        else
+            errorAfter = errorBefore;
+        end
+    
+        improvement = errorBefore - errorAfter;
+    
+        % Record results
+    
+        alternateHistory(cycle).cycle = cycle;
+        alternateHistory(cycle).theta = thetaInitial;
+        alternateHistory(cycle).relativeResidual = errorAfter;
+        alternateHistory(cycle).improvement = improvement;
+        alternateHistory(cycle).accepted = accepted;
+        alternateHistory(cycle).exitflag = exitflag;
+        alternateHistory(cycle).solverOutput = solverOutput;
+    
+        fprintf("Before: %.4f%%\n", 100*errorBefore);
+        fprintf("After:  %.4f%%\n", 100*errorAfter);
+        fprintf("Improvement: %.4f percentage points\n", ...
+            100*improvement);
+    
+        if improvement < cycleToleranceB
+            fprintf("Stopping: improvement below tolerance.\n");
+            break;
         end
     end
-end
-
-%% Report results
-
-fprintf("\n========== GLU GRID SEARCH ==========\n");
-fprintf("Original residual: %.4f%%\n", 100*baseError);
-fprintf("Best residual:     %.4f%%\n", 100*bestError);
-fprintf("Improvement:       %.4f percentage points\n", ...
-    100*(baseError-bestError));
-
-fprintf("\nOriginal Glu amplitude: %.4e\n", cBase(jGlu));
-fprintf("Best Glu amplitude:     %.4e\n", bestAmplitude);
-
-fprintf("\nOriginal Glu linewidth: %.3f Hz\n", ...
-    thetaBase(jGlu));
-fprintf("Best Glu linewidth:     %.3f Hz\n", ...
-    bestTheta(jGlu));
-
-fprintf("\nOriginal Glu shift: %.3f Hz\n", ...
-    thetaBase(M+jGlu));
-fprintf("Best Glu shift:     %.3f Hz\n", ...
-    bestTheta(M+jGlu));
-
-%% Plot residual landscape
-
-figure("Name", "Glu Parameter Grid Search");
-
-imagesc(shiftGrid, linewidthGrid, 100*errorGrid);
-set(gca, 'YDir', 'normal');
-hold on;
-
-% Original parameter location
-plot(thetaBase(M+jGlu), thetaBase(jGlu), ...
-    'wo', 'MarkerSize', 10, 'LineWidth', 2);
-
-% Best parameter location
-plot(bestTheta(M+jGlu), bestTheta(jGlu), ...
-    'rx', 'MarkerSize', 12, 'LineWidth', 2);
-
-colorbar;
-xlabel("Glu frequency shift (Hz)");
-ylabel("Glu Lorentzian FWHM (Hz)");
-title("Relative spectral residual (%)");
-legend("Original", "Best", "Location", "best");
-
-
-%% Refine the solution after activating Glu
-
-thetaStartGlu = bestTheta;
-
-objectiveGlu = @(x) profiledResidual( ...
-    x(:) .* thetaScale(:), ...
-    basisFids, t, mask, sFit);
-
-[xGlu, ~, ~, exitflagGlu, outputGlu] = lsqnonlin( ...
-    objectiveGlu, ...
-    thetaStartGlu(:) ./ thetaScale(:), ...
-    lb(:) ./ thetaScale(:), ...
-    ub(:) ./ thetaScale(:), ...
-    optionsB);
-
-thetaGlu = xGlu(:) .* thetaScale(:);
-
-% Re-estimate all concentrations and baseline
-[rGlu, cHatGlu, sHatGlu] = profiledResidual( ...
-    thetaGlu, basisFids, t, mask, sFit);
-
-fprintf("\n========== GLU REFINEMENT ==========\n");
-
-fprintf("Strategy B residual: %.4f%%\n", ...
-    100*norm(profiledResidual( ...
-    thetaB, basisFids, t, mask, sFit)));
-
-fprintf("Grid-search residual: %.4f%%\n", ...
-    100*bestError);
-
-fprintf("Refined residual: %.4f%%\n", ...
-    100*norm(rGlu));
-
-fprintf("\nGlu concentration: %.4e\n", cHatGlu(jGlu));
-fprintf("Glu linewidth: %.3f Hz\n", thetaGlu(jGlu));
-fprintf("Glu shift: %.3f Hz\n", thetaGlu(M+jGlu));
-
-fprintf("\nNumber of zero amplitudes: %d\n", ...
-    nnz(cHatGlu == 0));
-
-fprintf("Exit flag: %d\n", exitflagGlu);
-
-
-%% Diagnose Glu optimization landscape
-
-figure("Name", "Glu - Optimization Landscape");
-tiledlayout(1,2);
-
-nexttile;
-imagesc(shiftGrid, linewidthGrid, 100*errorGrid);
-set(gca, 'YDir', 'normal');
-colorbar;
-xlabel("Shift (Hz)");
-ylabel("Linewidth (Hz)");
-title("Relative residual (%)");
-
-nexttile;
-imagesc(shiftGrid, linewidthGrid, amplitudeGrid > 0);
-set(gca, 'YDir', 'normal');
-colorbar;
-clim([0 1]);
-xlabel("Shift (Hz)");
-ylabel("Linewidth (Hz)");
-title("Glu active (1) or inactive (0)");
-
-
-%% Strategy D - Sequential activation of inactive metabolites
-
-thetaD = thetaGlu(:);
-namesD = string(metaboliteNames(:));
-
-maxRoundsD = 4;
-minImprovementPP = 0.001;
-
-nGamma = 11;
-nDelta = 21;
-
-scaleD = thetaScale(:);
-
-objectiveD = @(x) profiledResidual( ...
-    x(:).*scaleD, basisFids, t, mask, sFit);
-
-for round = 1:maxRoundsD
-
-    [rCurrent, cCurrent] = profiledResidual( ...
-        thetaD, basisFids, t, mask, sFit);
-
-    currentError = norm(rCurrent);
-    inactive = find(cCurrent == 0);
-
-    fprintf("\n========== ROUND %d ==========\n", round);
-    fprintf("Starting residual: %.4f%%\n", 100*currentError);
-    fprintf("Inactive metabolites: %d\n", numel(inactive));
-
-    bestError = currentError;
-    bestTheta = thetaD;
-    bestMetabolite = NaN;
-
-    % Search each inactive metabolite
-
-    for j = inactive(:).'
-
-        gammaGrid = unique([ ...
-            linspace(lb(j), ub(j), nGamma), thetaD(j)]);
-
-        deltaGrid = unique([ ...
-            linspace(lb(M+j), ub(M+j), nDelta), ...
-            thetaD(M+j)]);
-
-        for ig = 1:numel(gammaGrid)
-            for id = 1:numel(deltaGrid)
-
-                thetaTest = thetaD;
-
-                thetaTest(j) = gammaGrid(ig);
-                thetaTest(M+j) = deltaGrid(id);
-
-                % Re-estimate every concentration and baseline
-                [rTest, cTest] = profiledResidual( ...
-                    thetaTest, basisFids, t, mask, sFit);
-
-                testError = norm(rTest);
-
-                % Candidate must activate this metabolite
-                if cTest(j) > 0 && testError < bestError
-                    bestError = testError;
-                    bestTheta = thetaTest;
-                    bestMetabolite = j;
-                end
-
-            end
+    
+    % Final fitted spectrum using Strategy B
+    
+    [rB, cHatB, sHatB, betaHatB, baselineHatB] = ...
+        profiledResidual(thetaInitial, basisFids, t, mask, sFit);
+    
+    % Compare against Strategy A
+    % rA = profiledResidual( ...
+    %     stageHistory(end).theta, basisFids, t, mask, sFit);
+    % 
+    % fprintf("\n========== FINAL COMPARISON ==========\n");
+    % fprintf("Strategy A: %.4f%%\n", 100*norm(rA));
+    % fprintf("Strategy B: %.4f%%\n", 100*norm(rB));
+    
+    % Show progression
+    TB = table( ...
+        [alternateHistory.cycle].', ...
+        100*[alternateHistory.relativeResidual].', ...
+        [alternateHistory.exitflag].', ...
+        [alternateHistory.accepted].', ...
+        'VariableNames', ...
+        {'Cycle', 'ResidualPercent', 'ExitFlag', 'Accepted'});
+    
+    disp(TB);
+    
+    % Strategy B - Full estimated parameter table
+    
+    % Extract fitted linear parameters
+    [~, cHatB] = profiledResidual( ...
+        thetaInitial, basisFids, t, mask, sFit);
+    
+    % Extract nonlinear parameters
+    gammaB = thetaInitial(1:M);
+    deltaB = thetaInitial(M+1:2*M);
+    gB = thetaInitial(2*M+1);
+    phiB = thetaInitial(2*M+2);
+    
+    % Construct parameter table
+    parameterTableB = table( ...
+        metaboliteNames(:), ...
+        cHatB(:), ...
+        gammaB(:), ...
+        deltaB(:), ...
+        'VariableNames', ...
+        {'Metabolite', 'Concentration', 'LinewidthHz', 'ShiftHz'});
+    
+    disp(parameterTableB);
+    
+    % Display global parameters
+    fprintf("\nGlobal Gaussian FWHM: %.4f Hz\n", gB);
+    fprintf("Global phase: %.4f degrees\n", rad2deg(phiB));
+    
+    
+    
+    % Strategy B - Plot fitted spectrum and residuals
+    
+    % Reconstruct Strategy B results
+    [rB, cHatB, sHatB, betaHatB, baselineHatB] = ...
+        profiledResidual(thetaInitial, basisFids, t, mask, sFit);
+    
+    relativeErrorB = norm(rB);
+    
+    % Recalculate singlet positions for Strategy B
+    % Singlet reference positions
+    
+    singletNames = ["NAA", "Cr", "PCh"];
+    singletRefPPM = [2.01, 3.03, 3.20];
+    
+    numSinglets = numel(singletNames);
+    deltaB = thetaInitial(M+1:2*M);
+    singletFitPPMB = nan(size(singletRefPPM));
+    
+    for k = 1:numSinglets
+        j = find(metaboliteNames == singletNames(k), 1);
+    
+        if ~isempty(j)
+            singletFitPPMB(k) = singletRefPPM(k) ...
+                - deltaB(j) / hdr.hzpppm;
         end
     end
-
-    improvementPP = 100*(currentError-bestError);
-
-    if isnan(bestMetabolite) || ...
-            improvementPP < minImprovementPP
-        fprintf("No further useful activation found.\n");
-        break;
+    
+    % Plot fitted spectrum and residuals
+    
+    figure("Name", "Strategy B - Full Nonlinear Spectral Fit");
+    tiledlayout(3,1);
+    
+    nexttile;
+    plot(ppmFit, real(sFit), 'b'); hold on;
+    plot(ppmFit, real(sHatB), 'r');
+    set(gca, 'XDir', 'reverse');
+    legend("Measured", "Nonlinear fit");
+    title("Real Spectrum");
+    grid on;
+    
+    hold on;
+    
+    for k = 1:numSinglets
+        if ~isnan(singletFitPPMB(k))
+            % Reference position
+            xline(singletRefPPM(k), '--', ...
+                sprintf('%s ref %.2f', singletNames(k), singletRefPPM(k)), ...
+                'LabelOrientation','horizontal', ...
+                'LabelVerticalAlignment','bottom', ...
+                'HandleVisibility', 'off');
+    
+            % Fitted position
+            xline(singletFitPPMB(k), '-', ...
+                sprintf('%s fit %.3f', singletNames(k), singletFitPPMB(k)), ...
+                'LabelOrientation','horizontal', ...
+                'LabelVerticalAlignment','top', ...
+                'HandleVisibility', 'off');
+        end
     end
-
-    fprintf("Best candidate: %s\n", ...
-        namesD(bestMetabolite));
-
-    fprintf("Grid residual: %.4f%%\n", 100*bestError);
-
-    % Joint variable-projection refinement
-
-    [xOpt, ~, ~, exitflagD] = lsqnonlin( ...
-        objectiveD, ...
-        bestTheta(:)./scaleD, ...
-        lb(:)./scaleD, ...
-        ub(:)./scaleD, ...
-        optionsB);
-
-    thetaRefined = xOpt(:).*scaleD;
-
-    rRefined = profiledResidual( ...
-        thetaRefined, basisFids, t, mask, sFit);
-
-    % Preserve the best result
-    if norm(rRefined) < bestError
-        thetaD = thetaRefined;
-    else
-        thetaD = bestTheta;
-    end
-
-    [rFinalRound, cFinalRound] = profiledResidual( ...
-        thetaD, basisFids, t, mask, sFit);
-
-    fprintf("Refined residual: %.4f%%\n", ...
-        100*norm(rFinalRound));
-
-    fprintf("Remaining zero amplitudes: %d\n", ...
-        nnz(cFinalRound == 0));
-
-    fprintf("Solver exit flag: %d\n", exitflagD);
-
+    
+    nexttile;
+    plot(ppmFit, imag(sFit), 'b'); hold on;
+    plot(ppmFit, imag(sHatB), 'r');
+    set(gca, 'XDir', 'reverse');
+    legend("Measured", "Nonlinear fit");
+    title("Imaginary Spectrum");
+    grid on;
+    
+    nexttile;
+    plot(ppmFit, real(sFit-sHatB), 'b'); hold on;
+    plot(ppmFit, imag(sFit-sHatB), 'r');
+    set(gca, 'XDir', 'reverse');
+    legend("Real residual", "Imaginary residual");
+    xlabel("Chemical shift (ppm)");
+    title(sprintf("Relative residual: %.2f%%", ...
+        100*relativeErrorB));
+    grid on;
+    
+    sgtitle("P01 | Division 36 | Strategy B - Alternating Optimization");
+    
+    % Plot estimated complex baseline
+    
+    figure("Name", "Strategy B - Complex Baseline");
+    plot(ppmFit, real(baselineHatB)); hold on;
+    plot(ppmFit, imag(baselineHatB));
+    set(gca, 'XDir', 'reverse');
+    legend('Real baseline', 'Imaginary baseline');
+    xlabel('Chemical shift (ppm)');
+    grid on;
 end
 
-% Final Strategy D results
+%% Noise Estimation
+ppmBoundaries = [9, 11];
 
-[rD, cHatD, sHatD, betaHatD, baselineHatD] = ...
-    profiledResidual(thetaD, basisFids, t, mask, sFit);
+[sFitAll, BFitAll, ppmFitAll, tAll, masks] = ...
+    getAxis(patientClasses, spectrumSigs, sigLengths, basisMat, ...
+    ppmBoundaries);
 
-parameterTableD = table( ...
-    namesD, ...
-    cHatD(:), ...
-    thetaD(1:M), ...
-    thetaD(M+1:2*M), ...
-    'VariableNames', ...
-    {'Metabolite', 'Amplitude', 'LinewidthHz', 'ShiftHz'});
+noiseSig = sFitAll{1} - mean(sFitAll{1});
+figure;
+plot(ppmFitAll{1}, sFitAll{1});
+plot(ppmFitAll{1}, noiseSig);
+plot(ppmFitAll{1}, zeros(size(ppmFitAll{1})));
 
-disp(parameterTableD);
-
-fprintf("\nStrategy D final residual: %.4f%%\n", ...
-    100*norm(rD));
-
-fprintf("Remaining zero amplitudes: %d\n", ...
-    nnz(cHatD == 0));
 
 %% LOCAL FUNCTIONS
 
@@ -1290,14 +377,15 @@ function patients = getPatients(outputs, patientIDs)
     end
 end
 
-function [fidSignals, specSignals, lengths, basisMatrices] = ...
-    extractSignals(patientClasses)
+function [fidSignals, specSignals, lengths, basisMatrices, ...
+    basisFidsAll, metaboliteNamesAll] = extractSignals(patientClasses)
     N = 10000;  % Pre-allocation maximum value, should later be trimmed using lengths
     M = numel(patientClasses);
     lengths = zeros(1, M);
     fidSignals = complex(zeros(N, M));
     specSignals = complex(zeros(N, M));
     basisMatrices = cell(1, M);
+    metaboliteNamesAll = cell(1, M);
     
     for p = 1:M
         patient = patientClasses{p};
@@ -1316,34 +404,36 @@ function [fidSignals, specSignals, lengths, basisMatrices] = ...
         s = fftshift(fft(fid));
         specSignals(1:fidLen, p) = s; 
 
-        basisMatrices{p} = getBasis(patient, fidLen);
-
+        [basisMatrices{p}, basisFidsAll{p}, metaboliteNamesAll{p}] = ...
+            getBasis(patient, fidLen);
 
     end
 end
 
-function B = getBasis(patient, n)
+function [B, basisFids, metaboliteNames] = getBasis(patient, n)
     basisStored = patient.preFitBasis.spectra;
     metaboliteNames = string(patient.preFitBasis.metaboliteNames);
     M = numel(metaboliteNames);
-    
+
     B = complex(zeros(n, M));
-    
+    basisFids = complex(zeros(n, M));
+
     for j = 1:M
         if iscell(basisStored)
             bj = basisStored{j}(:);
         else
             bj = basisStored(:, j);
         end
-    
+
         % Undo the original twofold zero filling
         bPadded = ifft(ifftshift(bj));
         assert(numel(bPadded) == 2*n);
-    
-        bFid = bPadded(1:n);
-    
+
+        % Remove zero filling and store metabolite FID
+        basisFids(:, j) = bPadded(1:n);
+
         % Transform to the measured frequency grid
-        B(:, j) = fftshift(fft(bFid));
+        B(:, j) = fftshift(fft(basisFids(:, j)));
     end
 end
 
@@ -1434,19 +524,24 @@ function plotFIDSpec(outputs, patientID, metabName)
     sgtitle("Patient P01 | Division 36 | Part 1");
 end
 
-function [sFit, BFit, ppmFit] = getAxis(patientClasses, spectrumSigs, ...
-    sigLengths, basisMat)
+function [sFit, BFit, ppmFit, t, masks] = getAxis( ...
+    patientClasses, spectrumSigs, sigLengths, basisMat, ppmBounds)
     numPatients = numel(sigLengths);
     sFit = cell(1, numPatients);
     BFit = cell(1, numPatients);
     ppmFit = cell(1, numPatients);
+    t = cell(1, numPatients);
+    masks = cell(1, numPatients);
         for patientID = 1: numPatients
             patient = patientClasses{patientID};
             n = sigLengths(patientID);
             s = spectrumSigs(1:n, patientID);
             B = basisMat{patientID};
             hdr = patient.preFitBasis.globalHeader;
-        
+            
+            % Construct time axis (seconds)
+            dt = hdr.badelt;
+            t{patientID} = (0:n-1).' * dt;
             SW = 1 / hdr.badelt;
             freqHz = -SW/2 + (0:n-1).' * SW/n;
         
@@ -1454,11 +549,12 @@ function [sFit, BFit, ppmFit] = getAxis(patientClasses, spectrumSigs, ...
             ppm = SpinsJ.HzToPPM(-freqHz, B0, "1H", SpinsJ.waterPPM);
         
             % Select fitting range
-            mask = ppm >= -1 & ppm <= 4.0;
+            mask = ppm >= ppmBounds(1) & ppm <= ppmBounds(2);
         
             sFit{patientID} = s(mask);
             BFit{patientID} = B(mask, :);
             ppmFit{patientID} = ppm(mask);
+            masks{patientID} = mask;
         end
 end
 
@@ -1641,7 +737,7 @@ function [r, cHat, sHat, betaHat, baselineHat] = ...
         
         sHat = metaboliteFit + baselineHat;
     else
-        % New mode: use supplied linear coefficients
+        % Use supplied linear coefficients
         cHat = cFixed(:);
         betaHat = betaFixed(:);
 
