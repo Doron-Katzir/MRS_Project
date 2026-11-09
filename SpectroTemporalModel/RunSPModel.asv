@@ -484,7 +484,7 @@ thetaScale = [gammaScale;
               globalBroadScale;
               phiScale];
 
-% 6. Staged nonlinear optimization
+%% 6. Staged nonlinear optimization
 
 stageIndices = { ...
     M+(1:M), ...             % Stage 1: individual shifts
@@ -979,6 +979,304 @@ xlabel('Chemical shift (ppm)');
 grid on;
 
 
+%% Investigate inactive Glu: linewidth and frequency-shift grid
+
+% Identify Glu
+jGlu = find(string(metaboliteNames(:)) == "Glu", 1);
+assert(~isempty(jGlu), "Glu not found in metabolite list.");
+
+% Start from Strategy B's final solution
+thetaBase = thetaB;
+
+[rBase, cBase] = profiledResidual( ...
+    thetaBase, basisFids, t, mask, sFit);
+
+baseError = norm(rBase);
+
+% Search the existing physical parameter bounds
+linewidthGrid = linspace(lb(jGlu), ub(jGlu), 21);
+shiftGrid = linspace(lb(M+jGlu), ub(M+jGlu), 31);
+
+% Store residuals and fitted Glu amplitudes
+errorGrid = nan(numel(linewidthGrid), numel(shiftGrid));
+amplitudeGrid = nan(size(errorGrid));
+
+bestError = baseError;
+bestTheta = thetaBase;
+bestAmplitude = cBase(jGlu);
+
+for ig = 1:numel(linewidthGrid)
+    for id = 1:numel(shiftGrid)
+
+        thetaTest = thetaBase;
+
+        % Change only Glu's nonlinear parameters
+        thetaTest(jGlu) = linewidthGrid(ig);
+        thetaTest(M+jGlu) = shiftGrid(id);
+
+        % Re-estimate ALL concentrations and the baseline
+        [rTest, cTest] = profiledResidual( ...
+            thetaTest, basisFids, t, mask, sFit);
+
+        testError = norm(rTest);
+
+        errorGrid(ig,id) = testError;
+        amplitudeGrid(ig,id) = cTest(jGlu);
+
+        if testError < bestError
+            bestError = testError;
+            bestTheta = thetaTest;
+            bestAmplitude = cTest(jGlu);
+        end
+    end
+end
+
+%% Report results
+
+fprintf("\n========== GLU GRID SEARCH ==========\n");
+fprintf("Original residual: %.4f%%\n", 100*baseError);
+fprintf("Best residual:     %.4f%%\n", 100*bestError);
+fprintf("Improvement:       %.4f percentage points\n", ...
+    100*(baseError-bestError));
+
+fprintf("\nOriginal Glu amplitude: %.4e\n", cBase(jGlu));
+fprintf("Best Glu amplitude:     %.4e\n", bestAmplitude);
+
+fprintf("\nOriginal Glu linewidth: %.3f Hz\n", ...
+    thetaBase(jGlu));
+fprintf("Best Glu linewidth:     %.3f Hz\n", ...
+    bestTheta(jGlu));
+
+fprintf("\nOriginal Glu shift: %.3f Hz\n", ...
+    thetaBase(M+jGlu));
+fprintf("Best Glu shift:     %.3f Hz\n", ...
+    bestTheta(M+jGlu));
+
+%% Plot residual landscape
+
+figure("Name", "Glu Parameter Grid Search");
+
+imagesc(shiftGrid, linewidthGrid, 100*errorGrid);
+set(gca, 'YDir', 'normal');
+hold on;
+
+% Original parameter location
+plot(thetaBase(M+jGlu), thetaBase(jGlu), ...
+    'wo', 'MarkerSize', 10, 'LineWidth', 2);
+
+% Best parameter location
+plot(bestTheta(M+jGlu), bestTheta(jGlu), ...
+    'rx', 'MarkerSize', 12, 'LineWidth', 2);
+
+colorbar;
+xlabel("Glu frequency shift (Hz)");
+ylabel("Glu Lorentzian FWHM (Hz)");
+title("Relative spectral residual (%)");
+legend("Original", "Best", "Location", "best");
+
+
+%% Refine the solution after activating Glu
+
+thetaStartGlu = bestTheta;
+
+objectiveGlu = @(x) profiledResidual( ...
+    x(:) .* thetaScale(:), ...
+    basisFids, t, mask, sFit);
+
+[xGlu, ~, ~, exitflagGlu, outputGlu] = lsqnonlin( ...
+    objectiveGlu, ...
+    thetaStartGlu(:) ./ thetaScale(:), ...
+    lb(:) ./ thetaScale(:), ...
+    ub(:) ./ thetaScale(:), ...
+    optionsB);
+
+thetaGlu = xGlu(:) .* thetaScale(:);
+
+% Re-estimate all concentrations and baseline
+[rGlu, cHatGlu, sHatGlu] = profiledResidual( ...
+    thetaGlu, basisFids, t, mask, sFit);
+
+fprintf("\n========== GLU REFINEMENT ==========\n");
+
+fprintf("Strategy B residual: %.4f%%\n", ...
+    100*norm(profiledResidual( ...
+    thetaB, basisFids, t, mask, sFit)));
+
+fprintf("Grid-search residual: %.4f%%\n", ...
+    100*bestError);
+
+fprintf("Refined residual: %.4f%%\n", ...
+    100*norm(rGlu));
+
+fprintf("\nGlu concentration: %.4e\n", cHatGlu(jGlu));
+fprintf("Glu linewidth: %.3f Hz\n", thetaGlu(jGlu));
+fprintf("Glu shift: %.3f Hz\n", thetaGlu(M+jGlu));
+
+fprintf("\nNumber of zero amplitudes: %d\n", ...
+    nnz(cHatGlu == 0));
+
+fprintf("Exit flag: %d\n", exitflagGlu);
+
+
+%% Diagnose Glu optimization landscape
+
+figure("Name", "Glu - Optimization Landscape");
+tiledlayout(1,2);
+
+nexttile;
+imagesc(shiftGrid, linewidthGrid, 100*errorGrid);
+set(gca, 'YDir', 'normal');
+colorbar;
+xlabel("Shift (Hz)");
+ylabel("Linewidth (Hz)");
+title("Relative residual (%)");
+
+nexttile;
+imagesc(shiftGrid, linewidthGrid, amplitudeGrid > 0);
+set(gca, 'YDir', 'normal');
+colorbar;
+clim([0 1]);
+xlabel("Shift (Hz)");
+ylabel("Linewidth (Hz)");
+title("Glu active (1) or inactive (0)");
+
+
+%% Strategy D - Sequential activation of inactive metabolites
+
+thetaD = thetaGlu(:);
+namesD = string(metaboliteNames(:));
+
+maxRoundsD = 4;
+minImprovementPP = 0.001;
+
+nGamma = 11;
+nDelta = 21;
+
+scaleD = thetaScale(:);
+
+objectiveD = @(x) profiledResidual( ...
+    x(:).*scaleD, basisFids, t, mask, sFit);
+
+for round = 1:maxRoundsD
+
+    [rCurrent, cCurrent] = profiledResidual( ...
+        thetaD, basisFids, t, mask, sFit);
+
+    currentError = norm(rCurrent);
+    inactive = find(cCurrent == 0);
+
+    fprintf("\n========== ROUND %d ==========\n", round);
+    fprintf("Starting residual: %.4f%%\n", 100*currentError);
+    fprintf("Inactive metabolites: %d\n", numel(inactive));
+
+    bestError = currentError;
+    bestTheta = thetaD;
+    bestMetabolite = NaN;
+
+    % Search each inactive metabolite
+
+    for j = inactive(:).'
+
+        gammaGrid = unique([ ...
+            linspace(lb(j), ub(j), nGamma), thetaD(j)]);
+
+        deltaGrid = unique([ ...
+            linspace(lb(M+j), ub(M+j), nDelta), ...
+            thetaD(M+j)]);
+
+        for ig = 1:numel(gammaGrid)
+            for id = 1:numel(deltaGrid)
+
+                thetaTest = thetaD;
+
+                thetaTest(j) = gammaGrid(ig);
+                thetaTest(M+j) = deltaGrid(id);
+
+                % Re-estimate every concentration and baseline
+                [rTest, cTest] = profiledResidual( ...
+                    thetaTest, basisFids, t, mask, sFit);
+
+                testError = norm(rTest);
+
+                % Candidate must activate this metabolite
+                if cTest(j) > 0 && testError < bestError
+                    bestError = testError;
+                    bestTheta = thetaTest;
+                    bestMetabolite = j;
+                end
+
+            end
+        end
+    end
+
+    improvementPP = 100*(currentError-bestError);
+
+    if isnan(bestMetabolite) || ...
+            improvementPP < minImprovementPP
+        fprintf("No further useful activation found.\n");
+        break;
+    end
+
+    fprintf("Best candidate: %s\n", ...
+        namesD(bestMetabolite));
+
+    fprintf("Grid residual: %.4f%%\n", 100*bestError);
+
+    % Joint variable-projection refinement
+
+    [xOpt, ~, ~, exitflagD] = lsqnonlin( ...
+        objectiveD, ...
+        bestTheta(:)./scaleD, ...
+        lb(:)./scaleD, ...
+        ub(:)./scaleD, ...
+        optionsB);
+
+    thetaRefined = xOpt(:).*scaleD;
+
+    rRefined = profiledResidual( ...
+        thetaRefined, basisFids, t, mask, sFit);
+
+    % Preserve the best result
+    if norm(rRefined) < bestError
+        thetaD = thetaRefined;
+    else
+        thetaD = bestTheta;
+    end
+
+    [rFinalRound, cFinalRound] = profiledResidual( ...
+        thetaD, basisFids, t, mask, sFit);
+
+    fprintf("Refined residual: %.4f%%\n", ...
+        100*norm(rFinalRound));
+
+    fprintf("Remaining zero amplitudes: %d\n", ...
+        nnz(cFinalRound == 0));
+
+    fprintf("Solver exit flag: %d\n", exitflagD);
+
+end
+
+% Final Strategy D results
+
+[rD, cHatD, sHatD, betaHatD, baselineHatD] = ...
+    profiledResidual(thetaD, basisFids, t, mask, sFit);
+
+parameterTableD = table( ...
+    namesD, ...
+    cHatD(:), ...
+    thetaD(1:M), ...
+    thetaD(M+1:2*M), ...
+    'VariableNames', ...
+    {'Metabolite', 'Amplitude', 'LinewidthHz', 'ShiftHz'});
+
+disp(parameterTableD);
+
+fprintf("\nStrategy D final residual: %.4f%%\n", ...
+    100*norm(rD));
+
+fprintf("Remaining zero amplitudes: %d\n", ...
+    nnz(cHatD == 0));
+
 %% LOCAL FUNCTIONS
 
 function patients = getPatients(outputs, patientIDs)
@@ -1157,7 +1455,7 @@ function [sFit, BFit, ppmFit] = getAxis(patientClasses, spectrumSigs, ...
             ppm = SpinsJ.HzToPPM(-freqHz, B0, "1H", SpinsJ.waterPPM);
         
             % Select fitting range
-            mask = ppm >= 0.2 & ppm <= 4.0;
+            mask = ppm >= -1 & ppm <= 4.0;
         
             sFit{patientID} = s(mask);
             BFit{patientID} = B(mask, :);
