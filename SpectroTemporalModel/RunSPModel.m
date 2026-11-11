@@ -210,6 +210,10 @@ for p = 1:numPatients
     [rB, cHatB, sHatB, betaHatB, baselineHatB] = ...
         profiledResidual(thetaInitial, basisFids, t, mask, sFit);
     
+    interactiveMRSFit( ...
+        basisFids, t, mask, ppmFit, sFit, ...
+        metaboliteNames, thetaInitial, cHatB, betaHatB);
+
     % Compare against Strategy A
     % rA = profiledResidual( ...
     %     stageHistory(end).theta, basisFids, t, mask, sFit);
@@ -317,7 +321,7 @@ for p = 1:numPatients
                 'HandleVisibility', 'off');
         end
     end
-    
+
     nexttile;
     plot(ppmFit, imag(sFit), 'b'); hold on;
     plot(ppmFit, imag(sHatB), 'r');
@@ -325,10 +329,12 @@ for p = 1:numPatients
     legend("Measured", "Nonlinear fit");
     title("Imaginary Spectrum");
     grid on;
+
+    hold on;
     
     nexttile;
     plot(ppmFit, real(sFit-sHatB), 'b'); hold on;
-    plot(ppmFit, imag(sFit-sHatB), 'r');
+    plot(ppmFit, imag(sFit-sHatB), 'r'); hold on;
     set(gca, 'XDir', 'reverse');
     legend("Real residual", "Imaginary residual");
     xlabel("Chemical shift (ppm)");
@@ -350,17 +356,49 @@ for p = 1:numPatients
 end
 
 %% Noise Estimation
-ppmBoundaries = [9, 11];
-
-[sFitAll, BFitAll, ppmFitAll, tAll, masks] = ...
-    getAxis(patientClasses, spectrumSigs, sigLengths, basisMat, ...
-    ppmBoundaries);
-
-noiseSig = sFitAll{1} - mean(sFitAll{1});
-figure;
-plot(ppmFitAll{1}, sFitAll{1});
-plot(ppmFitAll{1}, noiseSig);
-plot(ppmFitAll{1}, zeros(size(ppmFitAll{1})));
+% ppmBoundaries = [0.2, 11];
+% 
+% [sFitAll, ~, ppmFitAll, ~, ~] = ...
+%     getAxis(patientClasses, spectrumSigs, sigLengths, basisMat, ...
+%     ppmBoundaries);
+% 
+% figure;
+% hold on;
+% plot(ppmFitAll{1}, sFitAll{1});
+% 
+% ppmBoundaries = [0.2, 4.2];
+% 
+% [sFitAll, ~, ~, ~, ~] = ...
+%     getAxis(patientClasses, spectrumSigs, sigLengths, basisMat, ...
+%     ppmBoundaries);
+% 
+% K = numel(sFitAll{1});
+% 
+% ppmBoundaries = [9, 11];
+% 
+% [sFitAll, BFitAll, ppmFitAll, tAll, masks] = ...
+%     getAxis(patientClasses, spectrumSigs, sigLengths, basisMat, ...
+%     ppmBoundaries);
+% 
+% noiseSig = sFitAll{1};
+% 
+% figure;
+% plot(ppmFitAll{1}, noiseSig);
+% 
+% varReal = var(real(noiseSig));
+% varImag = var(imag(noiseSig));
+% 
+% noisePower = varReal + varImag;
+% 
+% expectedNoiseNorm = sqrt(K * noisePower);
+% 
+% noiseBenchmark = 100 * expectedNoiseNorm / norm(sFit);
+% 
+% fprintf("Estimated noise benchmark: %.3f%%\n", ...
+%     noiseBenchmark);
+% 
+% fprintf("Actual residual: %.3f%%\n", ...
+%     100 * norm(rB));
 
 
 %% LOCAL FUNCTIONS
@@ -466,7 +504,7 @@ function plotFIDSpec(outputs, patientID, metabName)
     ppm = SpinsJ.HzToPPM( ...
         -freqHz, B0, "1H", SpinsJ.waterPPM);
     
-    mask = ppm >= 0.2 & ppm <= 4.0;
+    mask = ppm >= 0.5 & ppm <= 4.0;
     
     % Plot everything
     
@@ -715,7 +753,7 @@ function [r, cHat, sHat, betaHat, baselineHat] = ...
         A = [real(Bnorm); imag(Bnorm)];
         y = [real(sFit); imag(sFit)];
         
-        % Stack the two baseline columns
+        % Stack baseline components
         D = [real(baselineBasis); imag(baselineBasis)];
         
         % Remove components that the baseline can explain
@@ -747,8 +785,8 @@ function [r, cHat, sHat, betaHat, baselineHat] = ...
         sHat = metaboliteFit + baselineHat;
     end
 
-    % Normalized real residual for lsqnonlin
+    % Normalized complex residual for lsqnonlin
     difference = sFit - sHat;
-
+    
     r = [real(difference); imag(difference)] / norm(sFit);
 end
