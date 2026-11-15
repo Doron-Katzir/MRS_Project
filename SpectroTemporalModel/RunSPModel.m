@@ -83,7 +83,7 @@ for p = 1:numPatients
 
     gammaInitial = 10;
     gamma0 = gammaInitial * ones(M, 1);
-    gammaUpper = 80 * ones(M, 1);
+    gammaUpper = 40 * ones(M, 1);
     gammaLower = 0 * ones(M, 1);
     gammaScale = abs(gammaUpper - gammaLower);
 
@@ -356,49 +356,57 @@ for p = 1:numPatients
 end
 
 %% Noise Estimation
-% ppmBoundaries = [0.2, 11];
-% 
-% [sFitAll, ~, ppmFitAll, ~, ~] = ...
-%     getAxis(patientClasses, spectrumSigs, sigLengths, basisMat, ...
-%     ppmBoundaries);
-% 
-% figure;
-% hold on;
-% plot(ppmFitAll{1}, sFitAll{1});
-% 
-% ppmBoundaries = [0.2, 4.2];
-% 
-% [sFitAll, ~, ~, ~, ~] = ...
-%     getAxis(patientClasses, spectrumSigs, sigLengths, basisMat, ...
-%     ppmBoundaries);
-% 
-% K = numel(sFitAll{1});
-% 
-% ppmBoundaries = [9, 11];
-% 
-% [sFitAll, BFitAll, ppmFitAll, tAll, masks] = ...
-%     getAxis(patientClasses, spectrumSigs, sigLengths, basisMat, ...
-%     ppmBoundaries);
-% 
-% noiseSig = sFitAll{1};
-% 
-% figure;
-% plot(ppmFitAll{1}, noiseSig);
-% 
-% varReal = var(real(noiseSig));
-% varImag = var(imag(noiseSig));
-% 
-% noisePower = varReal + varImag;
-% 
-% expectedNoiseNorm = sqrt(K * noisePower);
-% 
-% noiseBenchmark = 100 * expectedNoiseNorm / norm(sFit);
-% 
-% fprintf("Estimated noise benchmark: %.3f%%\n", ...
-%     noiseBenchmark);
-% 
-% fprintf("Actual residual: %.3f%%\n", ...
-%     100 * norm(rB));
+ppmBoundaries = [0.2, 11];
+
+[sFitAll, ~, ppmFitAll, ~, ~] = ...
+    getAxis(patientClasses, spectrumSigs, sigLengths, basisMat, ...
+    ppmBoundaries);
+
+figure;
+hold on;
+plot(ppmFitAll{1}, sFitAll{1});
+
+ppmBoundaries = [0.2, 4.2];
+
+[sFitAll, ~, ~, ~, ~] = ...
+    getAxis(patientClasses, spectrumSigs, sigLengths, basisMat, ...
+    ppmBoundaries);
+
+K = numel(sFitAll{1});
+
+ppmBoundaries = [9, 11];
+
+[sFitAll, BFitAll, ppmFitAll, tAll, masks] = ...
+    getAxis(patientClasses, spectrumSigs, sigLengths, basisMat, ...
+    ppmBoundaries);
+
+noiseSig = sFitAll{1};
+
+figure;
+plot(ppmFitAll{1}, noiseSig);
+
+varReal = var(real(noiseSig));
+varImag = var(imag(noiseSig));
+
+noisePower = varReal + varImag;
+
+expectedNoiseNorm = sqrt(K * noisePower);
+
+noiseBenchmark = 100 * expectedNoiseNorm / norm(sFit);
+
+fprintf("Estimated noise benchmark: %.3f%%\n", ...
+    noiseBenchmark);
+
+fprintf("Actual residual: %.3f%%\n", ...
+    100 * norm(rB));
+
+expectedNoiseNorm = sqrt(K * (varReal + varImag));
+
+actualResidualNorm = norm(sFit - sHatB);
+
+noiseRatio = actualResidualNorm / expectedNoiseNorm;
+
+fprintf("Residual / Noise ratio: %.3f\n", noiseRatio);
 
 
 %% LOCAL FUNCTIONS
