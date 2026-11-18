@@ -1,0 +1,131 @@
+clear all
+close all
+clc
+
+%% Define spin, sequence and post-processing variables
+% Spin system parameters
+B0 = 3; % Tesla
+concGlu = 1; % mM.
+concGln = 1;
+concCr = 1;
+
+% Sequence parameters
+% The typical MEGAPRESS echo time is 68 ms. This ensures that the GABA
+% peak at 3 ppm yields a nice looking "pseudo-doublet". Try changing it 
+% and see how it affects the results!
+TE = 68; % ms. 
+
+% Plotting parameters
+FWHMHz = 5; % Hz
+
+% Parameters for exporting the basis set
+basisFWHM = 1; % Hz. Keep it narrow for fitting.
+dwellTime = 1e-3; % Sec
+numAcqPts = 512; 
+
+spins = SpinsJ('B0', B0);
+spins.AddMetab("Glu",  "concentration", concGlu);
+spins.AddMetab("Gln", "concentration", concGln);
+spins.AddMetab("PCr", "concentration", concCr);
+
+%% Create the MEGAPRESS sequence
+seqON  = Sequence.GetIdealSequence("MEGAPRESSON", "TE", TE);
+seqOFF = Sequence.GetIdealSequence("MEGAPRESSOFF", "TE", TE);
+
+%% Acquire data
+[spinsOutON,  TTON]  = seqON.Apply (spins, "isVerbose", true);
+[spinsOutOFF, TTOFF] = seqOFF.Apply(spins, "isVerbose", true);
+
+TTDIFF = TTON - TTOFF;
+
+%% Plotting the resulting spectra.
+TTON.Plot  ("FWHM", FWHMHz, "B0", B0);
+TTOFF.Plot ("FWHM", FWHMHz, "B0", B0);
+TTDIFF.Plot("FWHM", FWHMHz, "B0", B0);
+
+%% Create and export basis functions
+
+outputDir = "C:\Users\User\Documents\Thesis_Lab\MRS_Project\MegaPRESS";
+
+if ~isfolder(outputDir)
+    mkdir(outputDir);
+end
+
+basisON = VDIBasis(TTON, ...
+    "dwellTime", dwellTime, "B0", B0, "numAcqPts", numAcqPts);
+
+basisOFF = VDIBasis(TTOFF, ...
+    "dwellTime", dwellTime, "B0", B0, "numAcqPts", numAcqPts);
+
+basisDIFF = VDIBasis(TTDIFF, ...
+    "dwellTime", dwellTime, "B0", B0, "numAcqPts", numAcqPts);
+
+basisON.ExportBasisToLCModel( ...
+    fullfile(outputDir, "editON.basis"), ...
+    "TE", TE, "FWHM", basisFWHM, "ampDSS", 0);
+
+basisOFF.ExportBasisToLCModel( ...
+    fullfile(outputDir, "editOFF.basis"), ...
+    "TE", TE, "FWHM", basisFWHM, "ampDSS", 0);
+
+basisDIFF.ExportBasisToLCModel( ...
+    fullfile(outputDir, "editDIFF.basis"), ...
+    "TE", TE, "FWHM", basisFWHM, "ampDSS", 0);
+
+%% Load MEGA-PRESS basis functions
+
+[BONAll, headersON, ppmON, ~] = ...
+    VDILCM.ReadBasis(fullfile(outputDir, "editON.basis"));
+
+[BOFFAll, headersOFF, ppmOFF, ~] = ...
+    VDILCM.ReadBasis(fullfile(outputDir, "editOFF.basis"));
+
+whos BON BOFF ppmON ppmOFF
+
+disp(class(BONAll))
+disp(headersON)
+
+%% Construct Glu/Gln basis matrices
+
+% Columns: [Glu, Gln]
+B_ON  = [BONAll{1}(:),  BONAll{2}(:)];
+B_OFF = [BOFFAll{1}(:), BOFFAll{2}(:)];
+
+% Difference basis
+B_DIFF = B_ON - B_OFF;
+
+% Shared ppm axis
+ppm = ppmON(:);
+
+% Verify dimensions
+assert(isequal(size(B_ON), size(B_OFF)));
+assert(size(B_ON, 1) == numel(ppm));
+
+disp(size(B_ON))
+
+%% Select spectral regions of interest
+
+% Each row defines [lowerPPM, upperPPM]
+ppmRanges = [
+    2.0, 2.6;
+    3.5, 4.0
+    ];
+
+% Construct a logical mask
+roiMask = false(size(ppm));
+
+for k = 1:size(ppmRanges, 1)
+    roiMask = roiMask | ...
+        (ppm >= ppmRanges(k,1) & ...
+        ppm <= ppmRanges(k,2));
+end
+
+% Restrict the basis matrices
+B_ON_ROI   = B_ON(roiMask, :);
+B_OFF_ROI  = B_OFF(roiMask, :);
+B_DIFF_ROI = B_DIFF(roiMask, :);
+
+ppmROI = ppm(roiMask);
+
+fprintf('Selected %d out of %d spectral points.\n', ...
+    nnz(roiMask), numel(ppm));
