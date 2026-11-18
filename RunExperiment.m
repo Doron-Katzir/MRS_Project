@@ -20,14 +20,25 @@ cfg.paths.coordDir = fullfile(cfg.paths.rootDir, "LCMFit");
 
 %% Splice all files in the working directory
 
-% cfg.input.mode = "directory";
-% 
-% cfg.input.directory = cfg.paths.dataDir;
-% cfg.input.filePattern = "*.dat";
-% cfg.input.recursive = false;
+cfg.input.mode = "directory";
+
+cfg.input.directory = cfg.paths.dataDir;
+cfg.input.filePattern = "*.dat";
+cfg.input.recursive = false;
+cfg.input.patientIDMode = "sequential";
+
+% We are generating into an empty directory
+cfg.output.deleteOldLCModelFiles = false;
+
+% Safety checks
+assert(numel(dir(fullfile(cfg.paths.dataDir, "*.dat"))) == 53, ...
+    "Expected exactly 53 acquisition files.");
+
+assert(isempty(dir(fullfile(cfg.paths.coordDir, "P*"))), ...
+    "Output directory already contains patient folders.");
 
 %% Call splice function
-% processedPatients = Splice_data_multi_patient_input(cfg);
+processedPatients = Splice_data_multi_patient_input(cfg);
 
 %% Load coord files
 %% Load only one fitted patient folder
