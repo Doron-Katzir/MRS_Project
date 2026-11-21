@@ -23,10 +23,17 @@ basisFWHM = 1; % Hz. Keep it narrow for fitting.
 dwellTime = 1e-3; % Sec
 numAcqPts = 512; 
 
+% Define metabolites
+metabolites = [
+    "Glu", "Gln", "PCr"
+];
+
 spins = SpinsJ('B0', B0);
-spins.AddMetab("Glu",  "concentration", concGlu);
-spins.AddMetab("Gln", "concentration", concGln);
-spins.AddMetab("PCr", "concentration", concCr);
+
+for m = 1:numel(metabolites)
+    spins.AddMetab(metabolites(m), ...
+        "concentration", 1);
+end
 
 %% Create the MEGAPRESS sequence
 seqON  = Sequence.GetIdealSequence("MEGAPRESSON", "TE", TE);

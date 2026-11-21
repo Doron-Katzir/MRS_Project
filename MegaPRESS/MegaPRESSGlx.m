@@ -25,12 +25,27 @@ disp(headersON)
 
 %% Construct Glu/Gln basis matrices
 
-% Columns: [Glu, Gln]
-B_ON  = [BONAll{1}(:),  BONAll{2}(:)];
-B_OFF = [BOFFAll{1}(:), BOFFAll{2}(:)];
+%% Construct basis matrices for all metabolites
 
-% Difference basis
+metNames = string({headersON.metabo});
+
+assert(isequal(metNames, string({headersOFF.metabo})), ...
+    'ON and OFF metabolite names do not match.');
+
+B_ON = cell2mat(cellfun(@(x) x(:), BONAll, ...
+    'UniformOutput', false));
+
+B_OFF = cell2mat(cellfun(@(x) x(:), BOFFAll, ...
+    'UniformOutput', false));
+
 B_DIFF = B_ON - B_OFF;
+
+% Find target metabolite indices
+idxGlu = find(metNames == "Glu");
+idxGln = find(metNames == "Gln");
+
+assert(isscalar(idxGlu) && isscalar(idxGln), ...
+    'Glu or Gln missing from the basis set.');
 
 % Shared ppm axis
 ppm = ppmON(:);
@@ -76,36 +91,15 @@ F_OFF = statisticalTools.fisherInformation(J_OFF, sigma2);
 % CRLB covariance matrix
 [C_OFF, infoOFF] = statisticalTools.crlb(F_OFF);
 
-% Display results
-disp('Fisher Information:')
-disp(F_OFF)
-
-disp('CRLB covariance:')
-disp(C_OFF)
-
-disp('CRLB standard deviations [Glu, Gln]:')
-disp(sqrt(diag(C_OFF)))
 
 %% CRLB - ON acquisition
 
-% Jacobian
 J_ON = B_ON(selectedRows, :);
 
-% Fisher information
 F_ON = statisticalTools.fisherInformation(J_ON, sigma2);
 
-% CRLB covariance
 [C_ON, infoON] = statisticalTools.crlb(F_ON);
 
-% Compare standard deviation bounds
-sdOFF = sqrt(diag(C_OFF));
-sdON  = sqrt(diag(C_ON));
-
-results = table( ...
-    ["Glu"; "Gln"], sdOFF, sdON, sdON ./ sdOFF, ...
-    'VariableNames', {'Metabolite', 'OFF_SD', 'ON_SD', 'ON_to_OFF'});
-
-disp(results)
 
 %% CRLB - Joint ON + OFF
 
@@ -115,13 +109,6 @@ F_JOINT = statisticalTools.fisherInformation(J_JOINT, sigma2);
 
 [C_JOINT, infoJOINT] = statisticalTools.crlb(F_JOINT);
 
-sdJOINT = sqrt(diag(C_JOINT));
-
-results = table( ...
-    ["Glu"; "Gln"], sdOFF, sdON, sdJOINT, ...
-    'VariableNames', {'Metabolite', 'OFF_SD', 'ON_SD', 'JOINT_SD'});
-
-disp(results)
 
 %% CRLB - Joint with equal acquisition time
 
@@ -131,26 +118,98 @@ F_JOINT_equal = F_JOINT / 2;
 
 sdJOINT_equal = sqrt(diag(C_JOINT_equal));
 
+%% Display Fisher Information and CRLB matrices
+
+% Metabolite labels
+labels = cellstr(metNames);
+
+% All acquisition strategies
+caseNames = {
+    'OFF'
+    'ON'
+    'JOINT'
+    'JOINT - Equal Time'
+    };
+
+F_matrices = {
+    F_OFF
+    F_ON
+    F_JOINT
+    F_JOINT_equal
+    };
+
+C_matrices = {
+    C_OFF
+    C_ON
+    C_JOINT
+    C_JOINT_equal
+    };
+
+% Display labeled matrices
+for k = 1:numel(caseNames)
+
+    fprintf('\n===== %s =====\n', caseNames{k});
+
+    % Fisher Information Matrix
+    F_table = array2table(F_matrices{k}, ...
+        'VariableNames', labels, ...
+        'RowNames', labels);
+
+    disp('Fisher Information Matrix:')
+    disp(F_table)
+
+    % CRLB Covariance Matrix
+    C_table = array2table(C_matrices{k}, ...
+        'VariableNames', labels, ...
+        'RowNames', labels);
+
+    disp('CRLB Covariance Matrix:')
+    disp(C_table)
+
+end
+
+
+%% Results - Glu, Gln and Glx
+
+% Target metabolite indices
+idxTarget = [idxGlu; idxGln];
+
+% Standard deviation lower bounds for all metabolites
+sdOFF = sqrt(diag(C_OFF));
+sdON = sqrt(diag(C_ON));
+sdJOINT = sqrt(diag(C_JOINT));
+sdJOINT_equal = sqrt(diag(C_JOINT_equal));
+
+% Extract Glu and Gln results
 results = table( ...
-    ["Glu"; "Gln"], sdOFF, sdJOINT_equal, ...
-    sdJOINT_equal ./ sdOFF, ...
+    metNames(idxTarget)', ...
+    sdOFF(idxTarget), ...
+    sdON(idxTarget), ...
+    sdJOINT_equal(idxTarget), ...
+    sdJOINT_equal(idxTarget) ./ sdOFF(idxTarget), ...
     'VariableNames', ...
-    {'Metabolite', 'OFF_SD', 'JOINT_Equal_SD', 'Ratio'});
+    {'Metabolite', 'OFF_SD', 'ON_SD', ...
+     'JOINT_Equal_SD', 'Ratio'});
 
 disp(results)
 
-%% CRLB - Glx concentration sum
+%% Glx CRLB
 
-w = [1; 1];
+% Linear combination: Glx = Glu + Gln
+w = zeros(numel(metNames), 1);
 
-% CRLB variance for Glx
+w(idxGlu) = 1;
+w(idxGln) = 1;
+
+% Variance lower bounds
 varGlxOFF = w' * C_OFF * w;
 varGlxJOINT = w' * C_JOINT_equal * w;
 
-% Standard deviation bounds
+% Standard deviation lower bounds
 sdGlxOFF = sqrt(varGlxOFF);
 sdGlxJOINT = sqrt(varGlxJOINT);
 
 fprintf('Glx OFF SD: %.6f\n', sdGlxOFF);
 fprintf('Glx JOINT SD: %.6f\n', sdGlxJOINT);
-fprintf('JOINT / OFF: %.4f\n', sdGlxJOINT / sdGlxOFF);
+fprintf('JOINT / OFF: %.4f\n', ...
+    sdGlxJOINT / sdGlxOFF);
