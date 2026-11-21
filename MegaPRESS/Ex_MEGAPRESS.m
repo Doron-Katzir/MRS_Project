@@ -9,7 +9,6 @@
 % =========================================================================
 
 clear all
-close all
 clc
 
 %% ========================================================================
@@ -25,7 +24,7 @@ concCr = 5; % mM. Typical in-vivo concentration.
 % The typical MEGAPRESS echo time is 68 ms. This ensures that the GABA
 % peak at 3 ppm yields a nice looking "pseudo-doublet". Try changing it 
 % and see how it affects the results!
-TE = 68; % ms. 
+TE = 20; % ms. 
 
 % Plotting parameters
 FWHMHz = 5; % Hz
