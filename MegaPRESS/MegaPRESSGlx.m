@@ -6,7 +6,7 @@ clc;
 basisDir = "C:\Users\User\Documents\Thesis_Lab\MRS_Project\MegaPRESS";
 
 % Each row defines [lowerPPM, upperPPM]
-ppmRanges = [1.5, 4.2];
+ppmRanges = [1.8, 2.6];
 
 % Assumed complex noise variance per selected frequency bin
 sigma2 = 1;
