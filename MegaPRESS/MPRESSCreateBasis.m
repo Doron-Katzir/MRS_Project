@@ -25,8 +25,8 @@ numAcqPts = 512;
 
 % Define metabolites
 metabolites = [
-    "Glu", "Gln", "PCr"
-];
+    "Glu", "Gln", "Pcr"
+    ];
 
 spins = SpinsJ('B0', B0);
 
